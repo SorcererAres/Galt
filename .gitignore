@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# 构建产物
+.build/
+dist/
+
+# Xcode / SwiftPM 本地状态
+.swiftpm/
+
+# Claude Code 本地配置
+.claude/
+
+# whisper.xcframework 调试符号（不参与构建，体积大）
+Vendor/**/dSYMs/

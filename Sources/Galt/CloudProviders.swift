@@ -1,0 +1,235 @@
+import Foundation
+
+// MARK: - 厂商目录
+
+/// 云端转写厂商
+struct STTProviderInfo: Identifiable {
+    enum Kind {
+        /// OpenAI 兼容的 audio/transcriptions multipart 接口
+        case openAICompatible(base: String, model: String)
+        /// 阿里云百炼 DashScope 多模态接口（qwen3-asr-flash）
+        case dashscope
+        /// 火山引擎大模型录音识别极速版
+        case volcano
+    }
+
+    let id: String
+    let name: String
+    let kind: Kind
+    let keyHint: String
+
+    /// 火山引擎需要 App ID + Access Token 双凭证
+    var needsAppKey: Bool {
+        if case .volcano = kind { return true }
+        return false
+    }
+
+    static let all: [STTProviderInfo] = [
+        .init(id: "groq", name: "Groq Whisper", kind: .openAICompatible(base: "https://api.groq.com/openai/v1", model: "whisper-large-v3-turbo"), keyHint: "console.groq.com 免费获取"),
+        .init(id: "siliconflow", name: "硅基流动 SenseVoice", kind: .openAICompatible(base: "https://api.siliconflow.cn/v1", model: "FunAudioLLM/SenseVoiceSmall"), keyHint: "cloud.siliconflow.cn 获取，国内直连"),
+        .init(id: "dashscope", name: "阿里云百炼（Qwen3 ASR）", kind: .dashscope, keyHint: "bailian.console.aliyun.com 获取 DashScope API Key"),
+        .init(id: "volcano", name: "火山引擎（大模型录音识别）", kind: .volcano, keyHint: "console.volcengine.com → 语音技术，需 App ID 与 Access Token"),
+        .init(id: "openai", name: "OpenAI", kind: .openAICompatible(base: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe"), keyHint: "platform.openai.com 获取"),
+    ]
+
+    static func byId(_ id: String) -> STTProviderInfo {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
+
+/// 润色/翻译/问答使用的 LLM 厂商（全部 OpenAI 兼容 chat/completions）
+struct LLMProviderInfo: Identifiable {
+    let id: String
+    let name: String
+    let base: String
+    let defaultModel: String
+    let keyHint: String
+
+    static let all: [LLMProviderInfo] = [
+        .init(id: "groq", name: "Groq", base: "https://api.groq.com/openai/v1", defaultModel: "llama-3.3-70b-versatile", keyHint: "console.groq.com 免费获取"),
+        .init(id: "dashscope", name: "阿里云百炼（通义千问）", base: "https://dashscope.aliyuncs.com/compatible-mode/v1", defaultModel: "qwen-plus", keyHint: "bailian.console.aliyun.com 获取 DashScope API Key"),
+        .init(id: "ark", name: "火山方舟（豆包）", base: "https://ark.cn-beijing.volces.com/api/v3", defaultModel: "doubao-1-5-pro-32k-250115", keyHint: "console.volcengine.com/ark 获取，模型填模型名或接入点 ID"),
+        .init(id: "deepseek", name: "DeepSeek", base: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat", keyHint: "platform.deepseek.com 获取"),
+        .init(id: "siliconflow", name: "硅基流动", base: "https://api.siliconflow.cn/v1", defaultModel: "deepseek-ai/DeepSeek-V3", keyHint: "cloud.siliconflow.cn 获取，国内直连"),
+        .init(id: "openai", name: "OpenAI", base: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini", keyHint: "platform.openai.com 获取"),
+    ]
+
+    static func byId(_ id: String) -> LLMProviderInfo {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
+
+// MARK: - 厂商探测（OpenAI 兼容 /models：用于「验证」与「获取模型」）
+
+enum ProviderProbe {
+    private struct ModelList: Decodable {
+        struct Model: Decodable { let id: String }
+        let data: [Model]
+    }
+
+    /// GET {base}/models，返回模型 id 列表；非 200 抛 STTError.http
+    static func fetchModels(base: String, key: String, timeout: TimeInterval) async throws -> [String] {
+        guard !key.isEmpty else { throw STTError.missingAPIKey }
+        guard let url = URL(string: "\(base)/models") else { throw STTError.http(-1, "接口地址无效") }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw STTError.http(code, String(data: data, encoding: .utf8) ?? "")
+        }
+        let ids = (try? JSONDecoder().decode(ModelList.self, from: data))?.data.map(\.id) ?? []
+        return ids.sorted()
+    }
+}
+
+// MARK: - 云端转写统一实现
+
+/// 按设置中选择的厂商路由的云端转写
+struct CloudSTTProvider: STTProvider {
+    var name: String {
+        STTProviderInfo.byId(SettingsStore.shared.cloudSTTProviderId).name
+    }
+
+    func transcribe(wav: Data) async throws -> String {
+        let info = STTProviderInfo.byId(SettingsStore.shared.cloudSTTProviderId)
+        let text: String
+        switch info.kind {
+        case .openAICompatible(let base, let model):
+            text = try await transcribeOpenAICompatible(wav: wav, providerId: info.id, base: base, model: model)
+        case .dashscope:
+            text = try await transcribeDashScope(wav: wav)
+        case .volcano:
+            text = try await transcribeVolcano(wav: wav)
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw STTError.empty }
+        return trimmed
+    }
+
+    // MARK: OpenAI 兼容（Groq / OpenAI / 硅基流动）
+
+    private func transcribeOpenAICompatible(wav: Data, providerId: String, base: String, model: String) async throws -> String {
+        let key = SettingsStore.shared.sttKey(forProvider: providerId)
+        guard !key.isEmpty else { throw STTError.missingAPIKey }
+
+        let effectiveBase = SettingsStore.shared.baseURL(forProvider: providerId, default: base)
+        var request = URLRequest(url: URL(string: "\(effectiveBase)/audio/transcriptions")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = SettingsStore.shared.requestTimeout(forProvider: providerId)
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        func formField(_ name: String, _ value: String) {
+            body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using: .utf8)!)
+        }
+        formField("model", model)
+        formField("response_format", "json")
+        // 个人词典作为引导提示，提升专有名词识别率
+        let terms = SettingsStore.shared.dictionaryTerms
+        if !terms.isEmpty {
+            formField("prompt", terms.joined(separator: ", "))
+        }
+        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+        body.append(wav)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw STTError.http(code, String(data: data, encoding: .utf8) ?? "")
+        }
+        struct TranscriptionResponse: Decodable { let text: String }
+        return try JSONDecoder().decode(TranscriptionResponse.self, from: data).text
+    }
+
+    // MARK: 阿里云百炼（DashScope 多模态，base64 音频）
+
+    private func transcribeDashScope(wav: Data) async throws -> String {
+        let key = SettingsStore.shared.sttKey(forProvider: "dashscope")
+        guard !key.isEmpty else { throw STTError.missingAPIKey }
+
+        var request = URLRequest(url: URL(string: "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let payload: [String: Any] = [
+            "model": "qwen3-asr-flash",
+            "input": [
+                "messages": [
+                    ["role": "system", "content": [["text": ""]]],
+                    ["role": "user", "content": [["audio": "data:audio/wav;base64,\(wav.base64EncodedString())"]]],
+                ],
+            ],
+            "parameters": [
+                "asr_options": ["enable_itn": true],
+            ],
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw STTError.http(code, "阿里云百炼：" + (String(data: data, encoding: .utf8) ?? ""))
+        }
+        struct DSResponse: Decodable {
+            struct Output: Decodable {
+                struct Choice: Decodable {
+                    struct Message: Decodable {
+                        struct Content: Decodable { let text: String? }
+                        let content: [Content]
+                    }
+                    let message: Message
+                }
+                let choices: [Choice]
+            }
+            let output: Output
+        }
+        let decoded = try JSONDecoder().decode(DSResponse.self, from: data)
+        return decoded.output.choices.first?.message.content.compactMap(\.text).joined() ?? ""
+    }
+
+    // MARK: 火山引擎（大模型录音识别极速版）
+
+    private func transcribeVolcano(wav: Data) async throws -> String {
+        let appKey = SettingsStore.shared.volcanoAppKey
+        let accessKey = SettingsStore.shared.sttKey(forProvider: "volcano")
+        guard !appKey.isEmpty, !accessKey.isEmpty else { throw STTError.missingAPIKey }
+
+        var request = URLRequest(url: URL(string: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(appKey, forHTTPHeaderField: "X-Api-App-Key")
+        request.setValue(accessKey, forHTTPHeaderField: "X-Api-Access-Key")
+        request.setValue("volc.bigasr.auc_turbo", forHTTPHeaderField: "X-Api-Resource-Id")
+        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Api-Request-Id")
+        request.setValue("-1", forHTTPHeaderField: "X-Api-Sequence")
+
+        let payload: [String: Any] = [
+            "user": ["uid": "galt"],
+            "audio": ["format": "wav", "data": wav.base64EncodedString()],
+            "request": ["model_name": "bigmodel", "enable_itn": true, "enable_punc": true],
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let http = response as? HTTPURLResponse
+        let statusCode = http?.value(forHTTPHeaderField: "X-Api-Status-Code") ?? ""
+        guard statusCode == "20000000" else {
+            let message = http?.value(forHTTPHeaderField: "X-Api-Message")
+                ?? String(data: data, encoding: .utf8) ?? ""
+            throw STTError.http(http?.statusCode ?? -1, "火山引擎 \(statusCode)：\(message)")
+        }
+        struct VolcResponse: Decodable {
+            struct Result: Decodable { let text: String? }
+            let result: Result?
+        }
+        return (try? JSONDecoder().decode(VolcResponse.self, from: data))?.result?.text ?? ""
+    }
+}
