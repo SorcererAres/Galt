@@ -13,13 +13,31 @@ enum Palette {
         })
     }
 
+    /// 带不透明度的动态色：用于「前景色半透明叠加」这类相对对比场景。
+    /// 半透明深 / 浅色会按固定比例压暗 / 提亮其所在区域，对比是相对的，
+    /// 因此叠在毛玻璃（behindWindow）上时不会随壁纸撞色融合。
+    private static func dyn(_ light: UInt32, _ lightAlpha: CGFloat,
+                            _ dark: UInt32, _ darkAlpha: CGFloat) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(hex: isDark ? dark : light, alpha: isDark ? darkAlpha : lightAlpha)
+        })
+    }
+
     // MARK: 主色（近黑 ↔ 近白，最高对比实心块）
     static let primary = dyn(0x212121, 0xF4F4F4)
     static let primaryHover = dyn(0x383838, 0xFFFFFF)
     static let primaryActive = dyn(0x0A0A0A, 0xD4D4D4)
     static let primarySubtle = dyn(0xECECEC, 0x2A2A2A) // 选中行 / 浅强调底（白卡上）
-    /// 侧栏选中底：需在 surface-canvas 上可见，故比 primary-subtle 略深
-    static let selectionFill = dyn(0xDFE0E3, 0x303030)
+    // MARK: 交互状态层（hover / selected / pressed）
+    /// 全部走「前景色半透明」：半透明近黑 / 近白按固定比例压暗 / 提亮局部，
+    /// 对比是相对的，叠在毛玻璃或任意底色上都不会撞色融合。
+    /// 层级关系：hover < selected < pressed。所有交互态统一引用这三个 token。
+    static let stateHover = dyn(0x000000, 0.05, 0xFFFFFF, 0.06)
+    static let stateSelected = dyn(0x000000, 0.08, 0xFFFFFF, 0.10)
+    static let statePressed = dyn(0x000000, 0.12, 0xFFFFFF, 0.14)
+    /// 侧栏选中底（兼容别名）= stateSelected
+    static let selectionFill = stateSelected
     static let onPrimary = dyn(0xFFFFFF, 0x212121)
     static let textOnColor = onPrimary
 
@@ -38,6 +56,8 @@ enum Palette {
     // MARK: 描边
     static let borderDefault = dyn(0xE2E2E2, 0x383838)
     static let borderSubtle = dyn(0xEEEEEE, 0x303030)
+    /// 输入框 / 下拉盒悬停时的描边（比 border-default 深一档，给出可交互暗示）
+    static let borderHover = dyn(0xCFCFCF, 0x4A4A4A)
     static let track = dyn(0xF0F0F0, 0x2A2A2A)
 
     // MARK: 青绿点缀 accent（暗色提亮一档）
@@ -98,12 +118,12 @@ extension Color {
 
 extension NSColor {
     /// 以 0xRRGGBB 整型构造 sRGB 颜色
-    convenience init(hex: UInt32) {
+    convenience init(hex: UInt32, alpha: CGFloat = 1) {
         self.init(
             srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
             green: CGFloat((hex >> 8) & 0xFF) / 255,
             blue: CGFloat(hex & 0xFF) / 255,
-            alpha: 1
+            alpha: alpha
         )
     }
 }

@@ -369,9 +369,17 @@ final class HotkeyRecorderView: NSView {
     // 全部对齐 Design.md v2.0 token；组件内不再出现游离 hex
     private var fieldBg: NSColor { dyn(0xF5F5F5, 0x1E1E1E) }     // surface-panel
     private var fieldBorder: NSColor { dyn(0xE2E2E2, 0x383838) } // border-default
-    private var hoverBg: NSColor { dyn(0xFFFFFF, 0x262626) }     // 亮：提到 surface-card；暗：提到 surface-card
+    // 悬停底：在 fieldBg 上按状态层比例（亮 5% / 暗 6%，对齐 Palette.stateHover）压暗 / 提亮。
+    // CALayer 背景须为实色，故用 fieldBg 与前景色混合得到等效实色，而非半透明叠加。
+    private var hoverBg: NSColor {
+        NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            let base = NSColor(hex: isDark ? 0x1E1E1E : 0xF5F5F5)            // = fieldBg
+            let overlay: NSColor = isDark ? .white : .black
+            return base.blended(withFraction: isDark ? 0.06 : 0.05, of: overlay) ?? base
+        }
+    }
     private var hoverBorder: NSColor { dyn(0xCFCFCF, 0x424242) } // neutral-300 / neutral-700（border-default 提一档）
-    private var capBg: NSColor { dyn(0xFFFFFF, 0x303030) }       // surface-card / surface-raised
     private var capBorder: NSColor { dyn(0xE2E2E2, 0x383838) }   // border-default
     private var capText: NSColor { dyn(0x212121, 0xF4F4F4) }     // text-primary
     private var primary: NSColor { dyn(0x212121, 0xF4F4F4) }     // primary（录制态边框 / 提示文字）
@@ -484,25 +492,25 @@ final class HotkeyRecorderView: NSView {
         (text as NSString).draw(in: rect, withAttributes: attrs)
     }
 
-    /// 键帽：白底描边圆角，高 28，文字 13，左右内边距 6；返回右边缘 x
+    /// 键帽：白底描边圆角，文字 14，左右内边距 6；高度随录制框留 4px 上下边距自适应（最小 20）。
     @discardableResult
     private func drawKeyCap(_ text: String, at x: CGFloat) -> CGFloat {
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 14, weight: .regular),
+            .font: NSFont.systemFont(ofSize: 12, weight: .regular),
             .foregroundColor: capText,
         ]
+        let capHeight: CGFloat = 20
         let textSize = (text as NSString).size(withAttributes: attrs)
-        let capWidth = max(28, textSize.width + 12)
-        let capRect = NSRect(x: x, y: (bounds.height - 28) / 2, width: capWidth, height: 28)
+        let capWidth = max(capHeight, textSize.width + 12)
+        let capRect = NSRect(x: x, y: (bounds.height - capHeight) / 2, width: capWidth, height: capHeight)
         let capPath = NSBezierPath(roundedRect: capRect, xRadius: 6, yRadius: 6)
-        capBg.setFill()
-        capPath.fill()
+        // 无填充，透出录制框底色；仅留描边
         capBorder.setStroke()
         capPath.lineWidth = 1
         capPath.stroke()
         let textRect = NSRect(
             x: capRect.minX + (capWidth - textSize.width) / 2,
-            y: capRect.minY + (28 - textSize.height) / 2,
+            y: capRect.minY + (capHeight - textSize.height) / 2,
             width: textSize.width,
             height: textSize.height
         )

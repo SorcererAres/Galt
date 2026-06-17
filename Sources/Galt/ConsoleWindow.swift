@@ -9,7 +9,7 @@ enum ConsoleDesign {
     static let contentBackground = Palette.surfacePanel
     static let cardBackground = Palette.surfaceCard
     static let fieldBackground = Color(nsColor: .textBackgroundColor)
-    static let subtleFill = Color.primary.opacity(0.05)
+    static let subtleFill = Palette.stateHover
     // 主操作色：用 teal-600 —— 既是规范「浅底青绿文字/图标」色，又保证白字按钮 ≈3.8:1 过 AA。
     // teal-500 (Palette.primary) 留给纯色块场景（选中态、图表高亮、进度条等无小字处）。
     static let primaryControl = Palette.primary
@@ -242,14 +242,6 @@ enum ConsolePrimaryPage: CaseIterable, Identifiable {
         case .dictionary: return "个人词典"
         }
     }
-
-    var icon: String {
-        switch self {
-        case .overview: return "waveform"
-        case .history: return "clock.arrow.circlepath"
-        case .dictionary: return "character.book.closed"
-        }
-    }
 }
 
 struct ConsoleView: View {
@@ -340,7 +332,7 @@ struct ConsoleSidebar: View {
                 ForEach(ConsolePrimaryPage.allCases) { page in
                     ConsoleSidebarRow(
                         title: page.sidebarTitle,
-                        systemImage: page.icon,
+                        page: page,
                         isSelected: selection == page,
                         namespace: selectionPill
                     ) {
@@ -355,7 +347,7 @@ struct ConsoleSidebar: View {
             Button(action: onSettings) {
                 ConsoleSidebarFooterRowContent(title: "设置")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(RowButtonStyle())
             .padding(.horizontal, ConsoleDesign.sidebarHorizontalPadding)
             .padding(.bottom, 8)
         }
@@ -365,29 +357,28 @@ struct ConsoleSidebar: View {
 
 struct ConsoleSidebarRow: View {
     let title: String
-    let systemImage: String
+    let page: ConsolePrimaryPage
     let isSelected: Bool
     var namespace: Namespace.ID
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            ConsoleSidebarRowContent(title: title, systemImage: systemImage, isSelected: isSelected, namespace: namespace)
+            ConsoleSidebarRowContent(title: title, page: page, isSelected: isSelected, namespace: namespace)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle(isSelected: isSelected, selectionDrawnExternally: true))
     }
 }
 
 struct ConsoleSidebarRowContent: View {
     let title: String
-    let systemImage: String
+    let page: ConsolePrimaryPage
     let isSelected: Bool
     var namespace: Namespace.ID
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                .font(.system(size: ConsoleDesign.sidebarIconSize, weight: .regular))
+            SidebarPageIcon(page: page)
                 .frame(width: ConsoleDesign.sidebarIconWidth, height: 16)
             Text(title)
                 .font(.system(size: ConsoleDesign.sidebarTextSize, weight: .medium))
@@ -429,6 +420,173 @@ struct ConsoleSidebarFooterRowContent: View {
         .padding(.leading, 8)
         .padding(.trailing, 10)
         .contentShape(RoundedRectangle(cornerRadius: ConsoleDesign.sidebarRowRadius, style: .continuous))
+    }
+}
+
+/// 侧栏一级页图标（对照 Figma node 610:637）：描边矢量，1.333 线宽 / 圆头圆角，16×16 画布。
+struct SidebarPageIcon: View {
+    let page: ConsolePrimaryPage
+    private let style = StrokeStyle(lineWidth: 1.333, lineCap: .round, lineJoin: .round)
+
+    var body: some View {
+        Group {
+            switch page {
+            case .overview: HomeWaveformShape().stroke(style: style)
+            case .history: HistoryFolderClockShape().stroke(style: style)
+            case .dictionary: DictionaryBookShape().stroke(style: style)
+            }
+        }
+        .frame(width: 16, height: 16)
+    }
+}
+
+/// 首页（node 610:650）：6 条高低不一的竖条（声纹/均衡器）
+struct HomeWaveformShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height) / 16
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * s, y: y * s) }
+        // (x, y起, y止)
+        let bars: [(CGFloat, CGFloat, CGFloat)] = [
+            (1.3333, 6.6667, 8.6667), (4, 4, 11.3333), (6.6667, 2, 14),
+            (9.3333, 5.3333, 10), (12, 3.3333, 12), (14.6667, 6.6667, 8.6667),
+        ]
+        var p = Path()
+        for (x, y0, y1) in bars {
+            p.move(to: pt(x, y0))
+            p.addLine(to: pt(x, y1))
+        }
+        return p
+    }
+}
+
+/// 历史（node 610:662）：文件夹 + 时钟 + 表针
+struct HistoryFolderClockShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height) / 16
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * s, y: y * s) }
+        func curve(_ p: inout Path, to ex: CGFloat, _ ey: CGFloat,
+                   _ c1x: CGFloat, _ c1y: CGFloat, _ c2x: CGFloat, _ c2y: CGFloat) {
+            p.addCurve(to: pt(ex, ey), control1: pt(c1x, c1y), control2: pt(c2x, c2y))
+        }
+        var p = Path()
+        // 表针
+        p.move(to: pt(10.6667, 9.3333))
+        p.addLine(to: pt(10.6667, 10.8))
+        p.addLine(to: pt(11.7333, 11.4667))
+        // 文件夹外形（开放路径）
+        p.move(to: pt(4.6667, 13.3334))
+        p.addLine(to: pt(2.6667, 13.3334))
+        curve(&p, to: 1.72386, 12.9429, 2.31304, 13.3334, 1.97391, 13.1929)
+        curve(&p, to: 1.33333, 12.0001, 1.47381, 12.6928, 1.33333, 12.3537)
+        p.addLine(to: pt(1.33333, 3.3334))
+        curve(&p, to: 1.72386, 2.39059, 1.33333, 2.97978, 1.47381, 2.64064)
+        curve(&p, to: 2.66667, 2.00006, 1.97391, 2.14054, 2.31304, 2.00006)
+        p.addLine(to: pt(5.26667, 2.00006))
+        curve(&p, to: 5.90647, 2.15648, 5.48966, 1.99788, 5.70964, 2.05166)
+        curve(&p, to: 6.39333, 2.60006, 6.1033, 2.2613, 6.27069, 2.41381)
+        p.addLine(to: pt(6.93333, 3.40006))
+        curve(&p, to: 7.41433, 3.84047, 7.05474, 3.58442, 7.22002, 3.73574)
+        curve(&p, to: 8.04667, 4.00006, 7.60865, 3.94519, 7.82593, 4.00003)
+        p.addLine(to: pt(13.3333, 4.00006))
+        curve(&p, to: 14.2761, 4.39059, 13.687, 4.00006, 14.0261, 4.14054)
+        curve(&p, to: 14.6667, 5.3334, 14.5262, 4.64064, 14.6667, 4.97978)
+        // 时钟表盘
+        p.addEllipse(in: CGRect(x: 6.6667 * s, y: 6.6667 * s, width: 8 * s, height: 8 * s))
+        return p
+    }
+}
+
+/// 词典（node 610:671）：书封圆角矩形 + 书脊竖线 + 斜置的另一册
+struct DictionaryBookShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height) / 16
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * s, y: y * s) }
+        func curve(_ p: inout Path, to ex: CGFloat, _ ey: CGFloat,
+                   _ c1x: CGFloat, _ c1y: CGFloat, _ c2x: CGFloat, _ c2y: CGFloat) {
+            p.addCurve(to: pt(ex, ey), control1: pt(c1x, c1y), control2: pt(c2x, c2y))
+        }
+        var p = Path()
+        // 书封：圆角矩形 (2,2)-(7.333,14)，圆角 ~0.667
+        p.addRoundedRect(in: CGRect(x: 2 * s, y: 2 * s, width: 5.3333 * s, height: 12 * s),
+                         cornerSize: CGSize(width: 0.6667 * s, height: 0.6667 * s),
+                         style: .continuous)
+        // 书脊
+        p.move(to: pt(4.6667, 2))
+        p.addLine(to: pt(4.6667, 14))
+        // 斜置的另一册
+        p.move(to: pt(13.6, 12.6002))
+        curve(&p, to: 13.2, 13.4668, 13.7333, 12.9335, 13.5333, 13.3335)
+        p.addLine(to: pt(11.9333, 13.9335))
+        curve(&p, to: 11.0667, 13.5335, 11.6, 14.0668, 11.2, 13.8668)
+        p.addLine(to: pt(7.4, 3.40016))
+        curve(&p, to: 7.8, 2.5335, 7.26667, 3.06683, 7.46667, 2.66683)
+        p.addLine(to: pt(9.06667, 2.06683))
+        curve(&p, to: 9.93333, 2.46683, 9.4, 1.9335, 9.8, 2.1335)
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// 自动添加（node 635:1333）：魔杖 / 自动手势 + 底部基线
+struct AutoAddShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height) / 16
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * s, y: y * s) }
+        func curve(_ p: inout Path, to ex: CGFloat, _ ey: CGFloat,
+                   _ c1x: CGFloat, _ c1y: CGFloat, _ c2x: CGFloat, _ c2y: CGFloat) {
+            p.addCurve(to: pt(ex, ey), control1: pt(c1x, c1y), control2: pt(c2x, c2y))
+        }
+        var p = Path()
+        p.move(to: pt(14, 11.3332))
+        p.addLine(to: pt(12.5627, 10.0878))
+        curve(&p, to: 12.391, 10.0014, 12.5152, 10.0428, 12.4554, 10.0127)
+        curve(&p, to: 12.2001, 10.0242, 12.3265, 9.9901, 12.2601, 9.99802)
+        curve(&p, to: 12.0535, 10.1486, 12.1401, 10.0503, 12.0891, 10.0936)
+        curve(&p, to: 12, 10.3332, 12.0179, 10.2035, 11.9993, 10.2677)
+        p.addLine(to: pt(12, 10.6665))
+        curve(&p, to: 11.8047, 11.1379, 12, 10.8433, 11.9298, 11.0129)
+        curve(&p, to: 11.3333, 11.3332, 11.6797, 11.2629, 11.5101, 11.3332)
+        p.addLine(to: pt(10, 11.3332))
+        curve(&p, to: 9.5286, 11.1379, 9.82319, 11.3332, 9.65362, 11.2629)
+        curve(&p, to: 9.33333, 10.6665, 9.40357, 11.0129, 9.33333, 10.8433)
+        curve(&p, to: 3.66667, 7.99985, 9.33333, 8.96985, 6.67267, 8.01985)
+        curve(&p, to: 2.48816, 8.488, 3.22464, 7.99985, 2.80072, 8.17544)
+        curve(&p, to: 2, 9.66651, 2.17559, 8.80056, 2, 9.22449)
+        curve(&p, to: 2.48816, 10.845, 2, 10.1085, 2.17559, 10.5325)
+        curve(&p, to: 3.66667, 11.3332, 2.80072, 11.1576, 3.22464, 11.3332)
+        curve(&p, to: 7.472, 2.33318, 6.43533, 11.3332, 6.83, 3.80318)
+        curve(&p, to: 7.95937, 1.69812, 7.58045, 2.08504, 7.74773, 1.86707)
+        curve(&p, to: 8.68662, 1.36355, 8.17101, 1.52917, 8.42062, 1.41434)
+        curve(&p, to: 9.48598, 1.40666, 8.95262, 1.31277, 9.22698, 1.32757)
+        curve(&p, to: 10.173, 1.8175, 9.74497, 1.48576, 9.98079, 1.62677)
+        curve(&p, to: 10.5893, 2.50129, 10.3653, 2.00823, 10.5081, 2.24293)
+        curve(&p, to: 10.6387, 3.30029, 10.6704, 2.75965, 10.6874, 3.0339)
+        curve(&p, to: 10.3099, 4.03015, 10.59, 3.56667, 10.4771, 3.81719)
+        curve(&p, to: 9.67867, 4.52251, 10.1426, 4.24311, 9.92594, 4.41211)
+        // 底部基线
+        p.move(to: pt(2, 14))
+        p.addLine(to: pt(14, 14))
+        return p
+    }
+}
+
+/// 手动添加（node 635:1323）：手绘波浪线
+struct ManualAddShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height) / 16
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * s, y: y * s) }
+        func curve(_ p: inout Path, to ex: CGFloat, _ ey: CGFloat,
+                   _ c1x: CGFloat, _ c1y: CGFloat, _ c2x: CGFloat, _ c2y: CGFloat) {
+            p.addCurve(to: pt(ex, ey), control1: pt(c1x, c1y), control2: pt(c2x, c2y))
+        }
+        var p = Path()
+        p.move(to: pt(4.66674, 2.33324))
+        curve(&p, to: 6.66674, 4.99991, 8.00007, 0.999907, 9.3334, 3.99991)
+        curve(&p, to: 3.3334, 10.6666, 1.00007, 6.66657, 1.3334, 9.99991)
+        curve(&p, to: 12.6667, 5.99991, 6.66674, 11.9999, 9.3334, 3.99991)
+        curve(&p, to: 10.0001, 13.9999, 16.0001, 7.99991, 13.0001, 14.9999)
+        curve(&p, to: 14.0001, 12.6666, 6.66674, 12.3332, 10.3334, 6.66657)
+        return p
     }
 }
 
@@ -1064,12 +1222,8 @@ struct HistoryPage: View {
                     }
                     .padding(.horizontal, 11)
                     .frame(width: 128, height: 28)
-                    // 无填充，透出面板底色；仅留描边
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(Palette.borderSubtle, lineWidth: 1)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    // 无填充，透出面板底色；描边随 hover 加深
+                    .modifier(HoverBorderBox())
                 }
                 .buttonStyle(.plain)
             }
@@ -1117,7 +1271,7 @@ struct HistoryPage: View {
                                 .strokeBorder(filter == item ? Palette.borderSubtle : Color.clear, lineWidth: 1)
                         )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RowButtonStyle(isSelected: filter == item, selectionDrawnExternally: true))
             }
         }
         .padding(2)
@@ -1282,7 +1436,7 @@ struct HistoryTimelineRow: View {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc")
                     .font(.system(size: 12, weight: .regular))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(IconButtonStyle())
             .foregroundStyle(copied ? Palette.success : Palette.textSecondary)
             .help("复制成稿文本")
             .accessibilityLabel(copied ? "已复制" : "复制成稿文本")
@@ -1291,7 +1445,7 @@ struct HistoryTimelineRow: View {
                 Image(systemName: "trash")
                     .font(.system(size: 12, weight: .regular))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(IconButtonStyle())
             .foregroundStyle(.secondary)
             .help("删除这条记录")
             .accessibilityLabel("删除这条记录")
@@ -1347,7 +1501,7 @@ struct HistoryRow: View {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
                         .font(.system(size: 11))
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(IconButtonStyle())
                 .help("复制成稿文本")
                 .accessibilityLabel(copied ? "已复制" : "复制成稿文本")
                 if let onDelete {
@@ -1355,7 +1509,7 @@ struct HistoryRow: View {
                         Image(systemName: "trash")
                             .font(.system(size: 11))
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(IconButtonStyle())
                     .help("删除这条记录")
                     .accessibilityLabel("删除这条记录")
                 }
@@ -1413,13 +1567,6 @@ struct DictionaryPage: View {
             }
         }
 
-        var icon: String? {
-            switch self {
-            case .all: return nil
-            case .automatic: return "sparkles"
-            case .manual: return "pencil.line"
-            }
-        }
     }
 
     /// 仅供快照/预览预填词条
@@ -1428,6 +1575,7 @@ struct DictionaryPage: View {
     @AppStorage("dictionaryTermsText") private var termsText = ""
     @State private var newTerm = ""
     @State private var filter: TermFilter = .all
+    private let termIconStroke = StrokeStyle(lineWidth: 1.333, lineCap: .round, lineJoin: .round)
     @State private var searchQuery = ""
     @State private var isSearching = false
     @State private var isAddingTerm = false
@@ -1514,12 +1662,8 @@ struct DictionaryPage: View {
                     .foregroundStyle(Palette.onPrimary)
                     .padding(.horizontal, 12)
                     .frame(height: 28)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(addButtonFill)
-                    )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(FilledButtonStyle(fill: addButtonFill))
             .help("添加新词")
         }
     }
@@ -1540,11 +1684,16 @@ struct DictionaryPage: View {
                     filter = item
                 } label: {
                     HStack(spacing: 4) {
-                        if let icon = item.icon {
-                            Image(systemName: icon)
-                                .font(.system(size: 11, weight: .regular))
-                                .foregroundStyle(titleColor)
-                                .frame(width: 16, height: 16)
+                        if item != .all {
+                            Group {
+                                if item == .automatic {
+                                    AutoAddShape().stroke(style: termIconStroke)
+                                } else {
+                                    ManualAddShape().stroke(style: termIconStroke)
+                                }
+                            }
+                            .foregroundStyle(titleColor)
+                            .frame(width: 16, height: 16)
                         }
                         Text(item.title)
                             .font(.system(size: 12, weight: .regular))
@@ -1562,7 +1711,7 @@ struct DictionaryPage: View {
                             .strokeBorder(filter == item ? hairline : Color.clear, lineWidth: 1)
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RowButtonStyle(isSelected: filter == item, selectionDrawnExternally: true))
             }
         }
         .padding(2)
@@ -1592,7 +1741,7 @@ struct DictionaryPage: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(IconButtonStyle(cornerRadius: 5, padding: 2))
                 .accessibilityLabel("关闭搜索")
             }
             .padding(.horizontal, 10)
@@ -1609,12 +1758,8 @@ struct DictionaryPage: View {
                     .font(.system(size: 14, weight: .regular))
                     .foregroundStyle(titleColor)
                     .frame(width: 32, height: 32)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(segmentBackground)
-                    )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(IconButtonStyle(cornerRadius: 10, padding: 0))
             .help("搜索")
             .accessibilityLabel("搜索词汇")
         }
@@ -1716,7 +1861,7 @@ private struct DictionaryTermChip: View {
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(IconButtonStyle(cornerRadius: 5, padding: 2))
                 .help("删除「\(term)」")
                 .accessibilityLabel("删除词条 \(term)")
             }
@@ -1726,7 +1871,7 @@ private struct DictionaryTermChip: View {
         .frame(height: 32)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Palette.surfaceRaised.opacity(hovering ? 0.6 : 0))
+                .fill(hovering ? Palette.stateHover : Color.clear)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)

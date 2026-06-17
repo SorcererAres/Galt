@@ -25,14 +25,14 @@ enum SettingsSidebarItem: CaseIterable, Identifiable {
         }
     }
 
-    var icon: String {
+    var iconKind: SettingsIconShape.Kind {
         switch self {
-        case .hotkeys: return "keyboard"
-        case .language: return "globe"
-        case .audio: return "mic"
-        case .voiceEngine: return "waveform"
-        case .modelLibrary: return "square.stack.3d.up"
-        case .general: return "gearshape"
+        case .hotkeys: return .keyboard
+        case .language: return .language
+        case .audio: return .audio
+        case .voiceEngine: return .engine
+        case .modelLibrary: return .models
+        case .general: return .general
         }
     }
 }
@@ -63,16 +63,179 @@ private enum SettingsDesign {
     static let sidebarTextSize: CGFloat = 14
 }
 
-/// 模型库表单输入框样式：36 高、圆角描边盒（对照设计稿）
+/// 模型库表单输入框样式：36 高、圆角描边盒（对照设计稿）。
+/// 三态（全中性，契合单色设计）：默认 borderDefault → 悬停 borderHover + 极淡底 →
+/// 聚焦 textTertiary 描边 1.5px + 极淡底（仅描边加深一档表示「已激活」，不引入彩色）。
 private struct FormFieldBox: ViewModifier {
+    @State private var hovering = false
+    @FocusState private var focused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var border: Color {
+        if focused { return Palette.textTertiary }
+        if hovering { return Palette.borderHover }
+        return Palette.borderDefault
+    }
+    private var fill: Color {
+        (focused || hovering) ? Palette.stateHover : .clear
+    }
+
     func body(content: Content) -> some View {
         content
             .font(.system(size: 14))
             .padding(.horizontal, 11)
             .frame(height: 36)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.clear))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
+            .focused($focused)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(fill))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(border, lineWidth: focused ? 1.5 : 1))
+            .onHover { hovering = $0 }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: focused)
+    }
+}
+
+/// 设置侧栏矢量图标（对照 Figma node 647:121）：1.333 描边 / 圆头圆角 / 16×16 画布。
+/// 按页种类切换路径；以 `.stroke()` 渲染，颜色随父级 foregroundStyle。
+struct SettingsIconShape: Shape {
+    enum Kind { case back, general, keyboard, language, audio, engine, models }
+    let kind: Kind
+
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height) / 16
+        var p = Path()
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * s, y: y * s) }
+        func m(_ x: CGFloat, _ y: CGFloat) { p.move(to: pt(x, y)) }
+        func l(_ x: CGFloat, _ y: CGFloat) { p.addLine(to: pt(x, y)) }
+        func c(_ ex: CGFloat, _ ey: CGFloat, _ c1x: CGFloat, _ c1y: CGFloat, _ c2x: CGFloat, _ c2y: CGFloat) {
+            p.addCurve(to: pt(ex, ey), control1: pt(c1x, c1y), control2: pt(c2x, c2y))
+        }
+        func dot(_ x: CGFloat, _ y: CGFloat) { p.move(to: pt(x, y)); p.addLine(to: pt(x + 0.02, y)) }
+        func ellipse(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) {
+            p.addEllipse(in: CGRect(x: x * s, y: y * s, width: w * s, height: h * s))
+        }
+        func roundRect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ r: CGFloat) {
+            p.addRoundedRect(in: CGRect(x: x * s, y: y * s, width: w * s, height: h * s),
+                             cornerSize: CGSize(width: r * s, height: r * s), style: .continuous)
+        }
+
+        switch kind {
+        case .back:
+            m(8, 12.6667); l(3.33333, 8); l(8, 3.33333)
+            m(12.6667, 8); l(3.33333, 8)
+
+        case .general: // 扳手
+            m(9.79999, 4.19986)
+            c(9.60941, 4.66652, 9.67783, 4.32448, 9.60941, 4.49202)
+            c(9.79999, 5.13319, 9.60941, 4.84103, 9.67783, 5.00857)
+            l(10.8667, 6.19986)
+            c(11.3333, 6.39043, 10.9913, 6.32201, 11.1588, 6.39043)
+            c(11.8, 6.19986, 11.5078, 6.39043, 11.6754, 6.32201)
+            l(13.8707, 4.12986)
+            c(14.526, 4.27519, 14.084, 3.91519, 14.446, 3.98319)
+            c(14.4932, 6.50892, 14.7274, 5.00777, 14.716, 5.78257)
+            c(13.2676, 8.37668, 14.2703, 7.23527, 13.8452, 7.88312)
+            c(11.2315, 9.2959, 12.69, 8.87024, 11.9837, 9.18908)
+            c(9.01999, 8.97986, 10.4793, 9.40272, 9.71218, 9.2931)
+            l(3.74665, 14.2532)
+            c(2.74675, 14.6672, 3.48144, 14.5183, 3.12176, 14.6672)
+            c(1.74699, 14.2529, 2.37174, 14.6671, 2.01211, 14.5181)
+            c(1.33301, 13.253, 1.48186, 13.9876, 1.33295, 13.628)
+            c(1.74732, 12.2532, 1.33307, 12.8779, 1.4821, 12.5183)
+            l(7.02065, 6.97986)
+            c(6.70461, 4.76836, 6.70741, 6.28766, 6.59779, 5.52058)
+            c(7.62383, 2.73227, 6.81143, 4.01613, 7.13027, 3.30989)
+            c(9.49159, 1.50667, 8.11738, 2.15464, 8.76524, 1.72953)
+            c(11.7253, 1.47386, 10.2179, 1.28382, 10.9927, 1.27243)
+            c(11.8713, 2.12986, 12.0173, 1.55386, 12.0853, 1.91519)
+            l(9.79999, 4.19986)
+            p.closeSubpath()
+
+        case .keyboard:
+            roundRect(1.33333, 2.66667, 13.3333, 10.6667, 0.66667)
+            dot(4, 5.33333); dot(6.66667, 5.33333); dot(9.33333, 5.33333); dot(12, 5.33333)
+            dot(5.33333, 8); dot(8, 8); dot(10.6667, 8)
+            m(4.66667, 10.6667); l(11.3333, 10.6667)
+
+        case .language: // 地球
+            ellipse(1.33333, 1.33333, 13.3333, 13.3333)
+            m(5.33333, 8)
+            c(8, 1.33333, 5.33333, 5.51783, 6.28816, 3.13077)
+            c(10.6667, 8, 9.71184, 3.13077, 10.6667, 5.51783)
+            c(8, 14.6667, 10.6667, 10.4822, 9.71184, 12.8692)
+            c(5.33333, 8, 6.28816, 12.8692, 5.33333, 10.4822)
+            p.closeSubpath()
+            m(1.33333, 8); l(14.6667, 8)
+
+        case .audio: // 活动脉冲线
+            m(14.6667, 8)
+            l(13.0133, 8)
+            c(12.2061, 8.26998, 12.722, 7.99938, 12.4384, 8.0942)
+            c(11.7267, 8.97333, 11.9737, 8.44575, 11.8053, 8.6928)
+            l(10.16, 14.5467)
+            c(10.1, 14.6333, 10.1499, 14.5813, 10.1288, 14.6117)
+            c(10, 14.6667, 10.0711, 14.655, 10.0361, 14.6667)
+            c(9.9, 14.6333, 9.96394, 14.6667, 9.92885, 14.655)
+            c(9.84, 14.5467, 9.87115, 14.6117, 9.8501, 14.5813)
+            l(6.16, 1.45333)
+            c(6.1, 1.36667, 6.1499, 1.41871, 6.12885, 1.3883)
+            c(6, 1.33333, 6.07115, 1.34503, 6.03606, 1.33333)
+            c(5.9, 1.36667, 5.96394, 1.33333, 5.92885, 1.34503)
+            c(5.84, 1.45333, 5.87115, 1.3883, 5.8501, 1.41871)
+            l(4.27333, 7.02667)
+            c(3.79658, 7.72801, 4.19498, 7.3061, 4.02759, 7.55234)
+            c(2.99333, 8, 3.56556, 7.90367, 3.28355, 7.99917)
+            l(1.33333, 8)
+
+        case .engine: // 芯片
+            m(2.66667, 6)
+            l(2.66667, 3.33333)
+            c(3.05719, 2.39052, 2.66667, 2.97971, 2.80714, 2.64057)
+            c(4, 2, 3.30724, 2.14048, 3.64638, 2)
+            l(12, 2)
+            c(12.9428, 2.39052, 12.3536, 2, 12.6928, 2.14048)
+            c(13.3333, 3.33333, 13.1929, 2.64057, 13.3333, 2.97971)
+            l(13.3333, 6)
+            m(5.33333, 5.33333); l(5.33333, 6)
+            m(8, 5.33333); l(8, 6)
+            m(10.6667, 5.33333); l(10.6667, 6)
+            roundRect(1.33333, 6, 13.3333, 8, 0.66667)
+            ellipse(4, 8.66667, 2.66667, 2.66667)
+            ellipse(9.33333, 8.66667, 2.66667, 2.66667)
+
+        case .models: // 堆叠
+            m(8, 8); l(8, 6)
+            c(7.80474, 5.5286, 8, 5.82319, 7.92976, 5.65362)
+            c(7.33333, 5.33333, 7.67971, 5.40357, 7.51014, 5.33333)
+            l(6, 5.33333)
+            c(5.5286, 5.5286, 5.82319, 5.33333, 5.65362, 5.40357)
+            c(5.33333, 6, 5.40357, 5.65362, 5.33333, 5.82319)
+            l(5.33333, 8)
+            m(10.6667, 13.3333); l(10.6667, 11.3333)
+            c(10.4714, 10.8619, 10.6667, 11.1565, 10.5964, 10.987)
+            c(10, 10.6667, 10.3464, 10.7369, 10.1768, 10.6667)
+            l(8.66667, 10.6667)
+            c(8.19526, 10.8619, 8.48986, 10.6667, 8.32029, 10.7369)
+            c(8, 11.3333, 8.07024, 10.987, 8, 11.1565)
+            l(8, 13.3333)
+            m(13.3333, 14.6667); l(13.3333, 1.33333)
+            m(2.66667, 8); l(13.3333, 8)
+            m(2.66667, 13.3333); l(13.3333, 13.3333)
+            m(2.66667, 1.33333); l(2.66667, 14.6667)
+            m(2.66667, 2.66667); l(13.3333, 2.66667)
+        }
+        return p
+    }
+}
+
+/// 设置侧栏图标统一渲染：16×16 描边，颜色随父级 foregroundStyle。
+struct SettingsSidebarIcon: View {
+    let kind: SettingsIconShape.Kind
+    var body: some View {
+        SettingsIconShape(kind: kind)
+            .stroke(style: StrokeStyle(lineWidth: 1.333, lineCap: .round, lineJoin: .round))
+            .frame(width: 16, height: 16)
     }
 }
 
@@ -254,8 +417,7 @@ struct SettingsView: View {
             }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: SettingsDesign.sidebarIconSize, weight: .regular))
+                SettingsSidebarIcon(kind: .back)
                     .frame(width: SettingsDesign.sidebarIconWidth, height: 16)
                 Text("返回应用")
                     .font(.system(size: SettingsDesign.sidebarTextSize, weight: .medium))
@@ -264,9 +426,8 @@ struct SettingsView: View {
             .foregroundStyle(SettingsDesign.backText)
             .frame(height: SettingsDesign.sidebarRowHeight)
             .padding(.horizontal, SettingsDesign.sidebarInnerHorizontalPadding)
-            .contentShape(RoundedRectangle(cornerRadius: SettingsDesign.sidebarRowRadius, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle(cornerRadius: SettingsDesign.sidebarRowRadius))
         .padding(.horizontal, SettingsDesign.sidebarHorizontalPadding)
     }
 
@@ -290,8 +451,7 @@ struct SettingsView: View {
             withAnimation(settingsTabAnimation) { sidebarSelection = item }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: item.icon)
-                    .font(.system(size: SettingsDesign.sidebarIconSize, weight: .regular))
+                SettingsSidebarIcon(kind: item.iconKind)
                     .frame(width: SettingsDesign.sidebarIconWidth, height: 16)
                 Text(item.title)
                     .font(.system(size: SettingsDesign.sidebarTextSize, weight: .medium))
@@ -310,7 +470,9 @@ struct SettingsView: View {
             }
             .contentShape(RoundedRectangle(cornerRadius: SettingsDesign.sidebarRowRadius, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle(isSelected: sidebarSelection == item,
+                                    cornerRadius: SettingsDesign.sidebarRowRadius,
+                                    selectionDrawnExternally: true))
         .padding(.horizontal, SettingsDesign.sidebarHorizontalPadding)
     }
 
@@ -397,7 +559,7 @@ struct SettingsView: View {
                     accessibilityLabel: "语音输入快捷键",
                     takenRawValues: takenHotkeyRawValues(excluding: "dictation")
                 )
-                    .frame(width: 196, height: 36)
+                    .frame(width: 196, height: 28)
             }
             settingsRow(title: "翻译", subtitle: "按住说话，输出翻译目标语言的成稿。") {
                 HotkeyRecorder(
@@ -406,7 +568,7 @@ struct SettingsView: View {
                     accessibilityLabel: "翻译快捷键",
                     takenRawValues: takenHotkeyRawValues(excluding: "translate")
                 )
-                    .frame(width: 196, height: 36)
+                    .frame(width: 196, height: 28)
             }
             settingsRow(title: "随便问", subtitle: "按住提问，AI 的回答直接写到光标处。") {
                 HotkeyRecorder(
@@ -415,7 +577,7 @@ struct SettingsView: View {
                     accessibilityLabel: "随便问快捷键",
                     takenRawValues: takenHotkeyRawValues(excluding: "ask")
                 )
-                    .frame(width: 196, height: 36)
+                    .frame(width: 196, height: 28)
             }
         }
     }
@@ -423,32 +585,26 @@ struct SettingsView: View {
     private var languagePanel: some View {
         settingsPanel(title: "") {
             settingsRow(title: "界面语言", subtitle: "选择用户界面使用的语言。") {
-                Picker("界面语言", selection: $uiLanguage) {
-                    Text("简体中文（中国大陆）").tag("zh-Hans")
-                }
-                .labelsHidden()
-                .frame(width: 230, alignment: .trailing)
+                DropdownPicker(selection: $uiLanguage, options: [
+                    DropdownOption(value: "zh-Hans", title: "简体中文（中国大陆）"),
+                ])
             }
             settingsRow(title: "翻译目标", subtitle: "选择翻译模式下的听写目标语言。") {
-                Picker("翻译目标", selection: $translationTarget) {
-                    Text("关闭").tag("off")
-                    Text("简体中文").tag("zh-Hans")
-                    Text("英语（美国）").tag("en")
-                    Text("日语").tag("ja")
-                }
-                .labelsHidden()
-                .frame(width: 230, alignment: .trailing)
+                DropdownPicker(selection: $translationTarget, options: [
+                    DropdownOption(value: "off", title: "关闭"),
+                    DropdownOption(value: "zh-Hans", title: "简体中文"),
+                    DropdownOption(value: "en", title: "英语（美国）"),
+                    DropdownOption(value: "ja", title: "日语"),
+                ])
             }
             settingsRow(title: "语言变体", subtitle: "选择您首选的语言变体，以获得最佳体验。") {
-                Picker("语言变体", selection: $localLocale) {
-                    Text("简体中文").tag("zh-CN")
-                    Text("English (US)").tag("en-US")
-                    Text("繁體中文（台灣）").tag("zh-TW")
-                    Text("粤语（香港）").tag("zh-HK")
-                    Text("日本語").tag("ja-JP")
-                }
-                .labelsHidden()
-                .frame(width: 230, alignment: .trailing)
+                DropdownPicker(selection: $localLocale, options: [
+                    DropdownOption(value: "zh-CN", title: "简体中文"),
+                    DropdownOption(value: "en-US", title: "English (US)"),
+                    DropdownOption(value: "zh-TW", title: "繁體中文（台灣）"),
+                    DropdownOption(value: "zh-HK", title: "粤语（香港）"),
+                    DropdownOption(value: "ja-JP", title: "日本語"),
+                ])
             }
         }
     }
@@ -456,14 +612,9 @@ struct SettingsView: View {
     private var audioPanel: some View {
         settingsPanel(title: "") {
             settingsRow(title: "麦克风", subtitle: "选择语音输入使用的音频设备。") {
-                Picker("麦克风", selection: $micDeviceUID) {
-                    Text("自动检测").tag("auto")
-                    ForEach(inputDevices) { device in
-                        Text(device.name).tag(device.uid)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 230, alignment: .trailing)
+                DropdownPicker(selection: $micDeviceUID, options:
+                    [DropdownOption(value: "auto", title: "自动检测")]
+                    + inputDevices.map { DropdownOption(value: $0.uid, title: $0.name) })
             }
             settingsToggleRow(title: "交互声音", subtitle: "为开始和停止等关键操作播放声音。", isOn: $soundFeedback)
             settingsToggleRow(title: "语音输入时静音", subtitle: "在语音输入时自动静音其他活动音频。", isOn: $muteWhileDictating)
@@ -476,43 +627,29 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 36) {
             settingsPanel(title: "转写") {
                 settingsRow(title: "引擎模式", subtitle: "选择云端、本地或自动兜底模式。") {
-                    Picker("引擎模式", selection: $engineMode) {
-                        Text("自动（云端优先，离线兜底）").tag("auto")
-                        Text("仅云端").tag("cloud")
-                        Text("仅本地（离线）").tag("local")
-                    }
-                    .labelsHidden()
-                    .frame(width: 260, alignment: .trailing)
+                    DropdownPicker(selection: $engineMode, options: [
+                        DropdownOption(value: "auto", title: "自动（云端优先，离线兜底）"),
+                        DropdownOption(value: "cloud", title: "仅云端"),
+                        DropdownOption(value: "local", title: "仅本地（离线）"),
+                    ])
                 }
                 settingsRow(title: "云端转写厂商", subtitle: cloudProviderHint) {
-                    Picker("云端转写厂商", selection: $sttProviderId) {
-                        ForEach(STTProviderInfo.all) { provider in
-                            Text(provider.name).tag(provider.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 260, alignment: .trailing)
+                    DropdownPicker(selection: $sttProviderId,
+                        options: STTProviderInfo.all.map { DropdownOption(value: $0.id, title: $0.name) })
                 }
                 settingsRow(title: "本地引擎", subtitle: "选择本地离线识别方式，Whisper 模型在「模型库」下载。") {
-                    Picker("本地引擎", selection: $localEngine) {
-                        Text("Apple 设备端听写").tag("apple")
-                        Text("Whisper 离线模型").tag("whispercpp")
-                    }
-                    .labelsHidden()
-                    .frame(width: 260, alignment: .trailing)
+                    DropdownPicker(selection: $localEngine, options: [
+                        DropdownOption(value: "apple", title: "Apple 设备端听写"),
+                        DropdownOption(value: "whispercpp", title: "Whisper 离线模型"),
+                    ])
                 }
             }
 
             settingsPanel(title: "AI润色") {
                 settingsToggleRow(title: "启用 LLM 润色", subtitle: "去填充词、自动标点、按目标应用调整语气。", isOn: $polishEnabled)
                 settingsRow(title: "润色厂商", subtitle: llmProviderHint) {
-                    Picker("润色厂商", selection: $llmProviderId) {
-                        ForEach(LLMProviderInfo.all) { provider in
-                            Text(provider.name).tag(provider.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 260, alignment: .trailing)
+                    DropdownPicker(selection: $llmProviderId,
+                        options: LLMProviderInfo.all.map { DropdownOption(value: $0.id, title: $0.name) })
                 }
             }
         }
@@ -563,7 +700,7 @@ struct SettingsView: View {
                 }
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle(isSelected: librarySegment == value, selectionDrawnExternally: true))
     }
 
     // MARK: 本地模型卡片列表
@@ -630,7 +767,7 @@ struct SettingsView: View {
             HStack(spacing: 12) {
                 if whisperModelId != model.id {
                     Button("设为默认") { whisperModelId = model.id }
-                        .buttonStyle(.plain)
+                        .buttonStyle(LinkButtonStyle())
                         .font(.system(size: 12))
                         .foregroundStyle(Palette.primary)
                 }
@@ -640,16 +777,17 @@ struct SettingsView: View {
                 } label: {
                     Text("删除").font(.system(size: 12)).foregroundStyle(Palette.danger500)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LinkButtonStyle())
             }
         } else {
-            Button("下载") { downloader.download(model) }
-                .buttonStyle(.plain)
-                .font(.system(size: 12))
-                .foregroundStyle(SettingsDesign.rowTitle)
-                .padding(.horizontal, 12)
-                .frame(height: 28)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
+            Button { downloader.download(model) } label: {
+                Text("下载")
+                    .font(.system(size: 12))
+                    .foregroundStyle(SettingsDesign.rowTitle)
+                    .padding(.horizontal, 12)
+                    .frame(height: 28)
+            }
+            .buttonStyle(OutlineButtonStyle())
         }
     }
 
@@ -711,10 +849,8 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(selected ? Palette.track : Color.clear))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle(isSelected: selected))
     }
 
     @ViewBuilder
@@ -738,9 +874,8 @@ struct SettingsView: View {
                     } label: {
                         Text("保存").font(.system(size: 12)).foregroundStyle(Palette.onPrimary)
                             .padding(.horizontal, 12).frame(height: 28)
-                            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.primary))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(FilledButtonStyle())
                 }
 
                 formField(label: "API 密钥", required: true) {
@@ -833,7 +968,7 @@ struct SettingsView: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LinkButtonStyle())
         if showAdvancedOptions {
             formField(label: "上下文窗口") {
                 TextField("自动检测", text: advancedBinding(id, key: "ctx"))
@@ -863,9 +998,8 @@ struct SettingsView: View {
         Button(action: action) {
             Text(title).font(.system(size: 12)).foregroundStyle(Palette.textPrimary)
                 .padding(.horizontal, 12).frame(height: 28)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(OutlineButtonStyle())
     }
 
     /// 仅 OpenAI 兼容厂商可用 /models 验证与获取（STT 的火山/百炼多模态不支持）
@@ -1017,7 +1151,7 @@ struct SettingsView: View {
                         )
                 )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle(pressedOpacity: 0.8, pressedScale: 0.97))
         .accessibilityLabel(mode == "light" ? "浅色" : mode == "dark" ? "深色" : "跟随系统")
         .accessibilityAddTraits(appearance == mode ? .isSelected : [])
     }
@@ -1146,7 +1280,7 @@ struct SettingsView: View {
                     accessibilityLabel: "\(title)快捷键",
                     takenRawValues: takenHotkeyRawValues(excluding: id)
                 )
-                    .frame(width: 196, height: 36)
+                    .frame(width: 196, height: 28)
             }
             Text(subtitle)
                 .font(.caption)

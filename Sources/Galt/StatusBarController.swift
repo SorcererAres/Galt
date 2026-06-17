@@ -10,7 +10,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     override init() {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
-        item.button?.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Galt")
+        let idle = GaltMark.image(size: 18)
+        idle.accessibilityDescription = "Galt"
+        item.button?.image = idle
         item.menu = buildMenu()
     }
 
@@ -18,14 +20,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     func setRecording(_ active: Bool) {
         guard let button = item.button else { return }
         if active {
-            let config = NSImage.SymbolConfiguration(paletteColors: [.systemRed])
-            let image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Galt 正在听写")?
-                .withSymbolConfiguration(config)
-            image?.isTemplate = false
+            let image = GaltMark.image(size: 18, color: .systemRed)
+            image.accessibilityDescription = "Galt 正在听写"
             button.image = image
         } else {
-            let image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Galt")
-            image?.isTemplate = true
+            let image = GaltMark.image(size: 18)
+            image.accessibilityDescription = "Galt"
             button.image = image
         }
     }

@@ -75,7 +75,7 @@ enum SnapshotRenderer {
         container.appearance = appearance
         container.wantsLayer = true
         container.layer?.backgroundColor = (scheme == .dark ? NSColor(white: 0.12, alpha: 1) : NSColor(white: 0.96, alpha: 1)).cgColor
-        let recorder = HotkeyRecorderView(frame: NSRect(x: 22, y: 14, width: 196, height: 36))
+        let recorder = HotkeyRecorderView(frame: NSRect(x: 22, y: 18, width: 196, height: 28))
         recorder.allowNone = true
         recorder.current = HotkeyCombo(keys: [.fn, .rightShift])
         container.addSubview(recorder)

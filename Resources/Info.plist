@@ -6,6 +6,8 @@
 	<string>zh_CN</string>
 	<key>CFBundleExecutable</key>
 	<string>Galt</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.sorcerer.galt</string>
 	<key>CFBundleInfoDictionaryVersion</key>

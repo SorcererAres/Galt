@@ -356,7 +356,7 @@ private struct PillCircleButton: View {
             .opacity(hovering ? 0.82 : 1)
             .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
         .onHover { hovering = $0 }
     }
 }
