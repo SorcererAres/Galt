@@ -34,7 +34,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
 
-        let hint = NSMenuItem(title: "按住 fn 说话 · 点按 fn 锁定听写", action: nil, keyEquivalent: "")
+        let hint = NSMenuItem(title: "按住 fn 说话 · 未授权可用 ⌃⌥⌘Space", action: nil, keyEquivalent: "")
         hint.isEnabled = false
         menu.addItem(hint)
         statsItem.isEnabled = false

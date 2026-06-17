@@ -229,7 +229,8 @@ struct SettingsView: View {
                 )
         }
         .padding(SettingsDesign.outerInset)
-        .background(SettingsDesign.windowBackground)
+        // 与控制台一致的侧栏毛玻璃；内容卡片自带实心底
+        .background(VibrancyBackground())
     }
 
     private var settingsSidebar: some View {
@@ -241,7 +242,7 @@ struct SettingsView: View {
             Spacer(minLength: 0)
         }
         .padding(.top, 10)
-        .background(SettingsDesign.windowBackground)
+        // 不铺实心底色——透出 sidebarBody 的毛玻璃
     }
 
     private var settingsBackButton: some View {
@@ -389,16 +390,31 @@ struct SettingsView: View {
 
     private var hotkeysPanel: some View {
         settingsPanel(title: "") {
-            settingsRow(title: "语音输入", subtitle: "按下开始和停止语音输入。") {
-                HotkeyRecorder(keyRaw: $dictationHotkey, allowNone: false)
+            settingsRow(title: "语音输入", subtitle: "按住说话，松开出字；点按进入锁定听写。") {
+                HotkeyRecorder(
+                    keyRaw: $dictationHotkey,
+                    allowNone: false,
+                    accessibilityLabel: "语音输入快捷键",
+                    takenRawValues: takenHotkeyRawValues(excluding: "dictation")
+                )
                     .frame(width: 196, height: 36)
             }
-            settingsRow(title: "翻译", subtitle: "按下开始和停止翻译。") {
-                HotkeyRecorder(keyRaw: $translateHotkey, allowNone: true)
+            settingsRow(title: "翻译", subtitle: "按住说话，输出翻译目标语言的成稿。") {
+                HotkeyRecorder(
+                    keyRaw: $translateHotkey,
+                    allowNone: true,
+                    accessibilityLabel: "翻译快捷键",
+                    takenRawValues: takenHotkeyRawValues(excluding: "translate")
+                )
                     .frame(width: 196, height: 36)
             }
-            settingsRow(title: "随便问", subtitle: "按下开始和停止随便提问。") {
-                HotkeyRecorder(keyRaw: $askHotkey, allowNone: true)
+            settingsRow(title: "随便问", subtitle: "按住提问，AI 的回答直接写到光标处。") {
+                HotkeyRecorder(
+                    keyRaw: $askHotkey,
+                    allowNone: true,
+                    accessibilityLabel: "随便问快捷键",
+                    takenRawValues: takenHotkeyRawValues(excluding: "ask")
+                )
                     .frame(width: 196, height: 36)
             }
         }
@@ -1107,29 +1123,47 @@ struct SettingsView: View {
 
     private var hotkeySection: some View {
         Section {
-            hotkeyPicker("语音输入", subtitle: "按住说话，松开出字；点按进入锁定听写", selection: $dictationHotkey, allowNone: false)
-            hotkeyPicker("翻译", subtitle: "按住说话，输出翻译目标语言的成稿", selection: $translateHotkey, allowNone: true)
-            hotkeyPicker("随便问", subtitle: "按住提问，AI 的回答直接写到光标处", selection: $askHotkey, allowNone: true)
+            hotkeyPicker("语音输入", id: "dictation", subtitle: "按住说话，松开出字；点按进入锁定听写", selection: $dictationHotkey, allowNone: false)
+            hotkeyPicker("翻译", id: "translate", subtitle: "按住说话，输出翻译目标语言的成稿", selection: $translateHotkey, allowNone: true)
+            hotkeyPicker("随便问", id: "ask", subtitle: "按住提问，AI 的回答直接写到光标处", selection: $askHotkey, allowNone: true)
         } header: {
             Label("键盘快捷键", systemImage: "keyboard")
         } footer: {
-            Text("均为按住说话的修饰键，不会干扰正常输入。三个功能请绑定不同按键。")
+            Text("均为按住说话的修饰键，不会干扰正常输入。三个功能请绑定不同的快捷键。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
-    private func hotkeyPicker(_ title: String, subtitle: String, selection: Binding<String>, allowNone: Bool) -> some View {
+    private func hotkeyPicker(_ title: String, id: String, subtitle: String, selection: Binding<String>, allowNone: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(title)
                 Spacer(minLength: 12)
-                HotkeyRecorder(keyRaw: selection, allowNone: allowNone)
-                    .frame(width: 150, height: 22)
+                HotkeyRecorder(
+                    keyRaw: selection,
+                    allowNone: allowNone,
+                    accessibilityLabel: "\(title)快捷键",
+                    takenRawValues: takenHotkeyRawValues(excluding: id)
+                )
+                    .frame(width: 196, height: 36)
             }
             Text(subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private func takenHotkeyRawValues(excluding id: String) -> Set<String> {
+        [
+            id == "dictation" ? nil : dictationHotkey,
+            id == "translate" ? nil : translateHotkey,
+            id == "ask" ? nil : askHotkey,
+        ]
+        .compactMap { $0 }
+        .filter { HotkeyCombo(rawValue: $0).isEmpty == false }
+        .reduce(into: Set<String>()) { result, raw in
+            result.insert(HotkeyCombo(rawValue: raw).canonicalRawValue)
         }
     }
 

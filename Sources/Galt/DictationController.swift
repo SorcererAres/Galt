@@ -31,6 +31,14 @@ final class DictationController {
         recorder.onLevel = { [weak self] level in
             self?.hud.state.level = level
         }
+        // 锁定听写时 HUD 上的「确认 ✓」按钮：与再次点按热键等价
+        hud.onStopRequested = { [weak self] in
+            self?.finishDictation()
+        }
+        // 「取消 ✕」按钮：丢弃本次录音，不转写、不出字
+        hud.onCancelRequested = { [weak self] in
+            self?.cancelDictation()
+        }
     }
 
     // MARK: - 热键入口
@@ -87,6 +95,22 @@ final class DictationController {
         }
     }
 
+    /// 取消听写：停止采集并丢弃音频，不进入转写流程
+    private func cancelDictation() {
+        sessionTimer?.invalidate()
+        sessionTimer = nil
+        locked = false
+        pendingSelection = nil
+        guard recorder.isRecording else { return }
+        _ = recorder.stop()
+        onActiveChange?(false)
+        AudioDucker.shared.restore()
+        if SettingsStore.shared.soundFeedback {
+            NSSound(named: "Tink")?.play()
+        }
+        hud.hide()
+    }
+
     private func finishDictation() {
         sessionTimer?.invalidate()
         sessionTimer = nil
@@ -100,7 +124,9 @@ final class DictationController {
             NSSound(named: "Tink")?.play()
         }
         guard let wav else {
-            hud.hide() // 录音过短，静默忽略
+            // 录音过短或无声：给一次轻量反馈再淡出，避免用户以为热键失效
+            hud.state.phase = .empty
+            hud.hide(after: 1.2)
             return
         }
 
@@ -129,8 +155,8 @@ final class DictationController {
                         self.hud.state.phase = .success(final)
                         self.hud.hide(after: 1.8)
                     } else {
-                        self.hud.state.phase = .error("已复制到剪贴板，可手动 ⌘V。自动粘贴需在「辅助功能」中重新勾选 Galt")
-                        self.hud.hide(after: 5)
+                        self.hud.state.phase = .error("已复制到剪贴板，可手动 ⌘V")
+                        self.hud.hide(after: 3)
                     }
                 }
             } catch {

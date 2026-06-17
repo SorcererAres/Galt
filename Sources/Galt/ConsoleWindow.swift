@@ -26,6 +26,25 @@ enum ConsoleDesign {
     static let homeContentWidth: CGFloat = 904
 }
 
+/// 系统毛玻璃背景：`behindWindow` 采样窗口后方（桌面 / 其它窗口），随亮暗与对比自适应。
+/// 用于侧栏与窗口留白区，呈现 macOS 原生侧栏的磨砂质感（正文卡片仍走实心，保证可读）。
+struct VibrancyBackground: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .sidebar
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = .behindWindow
+        // 跟随窗口激活态自动提亮 / 变灰，对齐系统侧栏行为
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = material
+    }
+}
+
 /// 控制台主窗口（菜单栏 → 打开控制台）
 final class ConsoleWindowController {
     static let shared = ConsoleWindowController()
@@ -45,6 +64,9 @@ final class ConsoleWindowController {
             w.title = "Galt 控制台"
             w.titleVisibility = .hidden
             w.titlebarAppearsTransparent = true
+            // 透明窗口：让侧栏的 behindWindow 毛玻璃能采样到后方桌面/窗口
+            w.isOpaque = false
+            w.backgroundColor = .clear
             w.isReleasedWhenClosed = false
             w.contentMinSize = route.minimumContentSize
             w.contentView = NSHostingView(rootView: ConsoleView(navigation: navigation) { [weak self] route in
@@ -277,7 +299,8 @@ struct ConsoleView: View {
                 .transition(.opacity)
             }
         }
-        .background(ConsoleDesign.sidebarBackground)
+        // 窗口画布走毛玻璃；侧栏与四周留白透出后方，正文卡片在其上保持实心
+        .background(VibrancyBackground())
         .ignoresSafeArea()
     }
 
@@ -336,7 +359,7 @@ struct ConsoleSidebar: View {
             .padding(.horizontal, ConsoleDesign.sidebarHorizontalPadding)
             .padding(.bottom, 8)
         }
-        .background(ConsoleDesign.sidebarBackground)
+        // 不铺实心底色——透出窗口画布的毛玻璃
     }
 }
 
@@ -1041,14 +1064,12 @@ struct HistoryPage: View {
                     }
                     .padding(.horizontal, 11)
                     .frame(width: 128, height: 28)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(ConsoleDesign.cardBackground)
-                    )
+                    // 无填充，透出面板底色；仅留描边
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(Palette.borderSubtle, lineWidth: 1)
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
@@ -1135,15 +1156,16 @@ struct HistoryPage: View {
                                     HistoryStore.shared.delete(id: record.id)
                                 }
                                 if index < group.records.count - 1 {
-                                    Divider()
-                                        .background(Palette.borderSubtle)
-                                        .padding(.horizontal, 16)
+                                    // 行间分隔线：通栏 border-subtle（对齐 Figma #ededed，无左右内缩）
+                                    Rectangle()
+                                        .fill(Palette.borderSubtle)
+                                        .frame(height: 1)
                                 }
                             }
                         }
-                        // 每个日期分组为一张圆角描边卡片（对照设计稿）
-                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Palette.surfaceCard))
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
+                        // 每个日期分组为一张圆角描边卡片（无填充，透出面板底色；悬停高亮裁切到圆角内）
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.borderSubtle, lineWidth: 1))
                     }
                 }
             }
@@ -1193,12 +1215,12 @@ struct HistoryTimelineRow: View {
     private var hasRaw: Bool { !record.raw.isEmpty && record.raw != record.text }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
+        HStack(alignment: .top, spacing: 8) {
             Text(record.date.formatted(.dateTime.hour().minute()))
                 .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(mutedColor)
                 .monospacedDigit()
-                .frame(width: 54, height: 22, alignment: .leading)
+                .frame(width: 63, height: 22, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(record.text)
@@ -1215,15 +1237,21 @@ struct HistoryTimelineRow: View {
                         .textSelection(.enabled)
                 }
             }
-
-            rowActions
-                .frame(width: 64, height: 22, alignment: .trailing)
-                .opacity(hovering ? 1 : 0)
-                .allowsHitTesting(hovering)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 15)
-        .frame(minHeight: 52, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .topLeading)
+        // 整行悬停高亮，强化「可点开 / 可操作」的反馈
+        .background(hovering ? ConsoleDesign.subtleFill : Color.clear)
+        // 操作按钮作为右上浮层，不占据正文宽度（正文保持 Figma 的 801）
+        .overlay(alignment: .topTrailing) {
+            rowActions
+                .padding(.trailing, 16)
+                .padding(.vertical, 15)
+                .opacity(hovering ? 1 : 0)
+                .allowsHitTesting(hovering)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
+        }
         .contentShape(Rectangle())
         .onTapGesture {
             guard hasRaw else { return }

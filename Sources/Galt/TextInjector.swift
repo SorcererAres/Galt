@@ -12,9 +12,7 @@ enum TextInjector {
         pasteboard.setString(text, forType: .string)
 
         guard AXIsProcessTrusted() else {
-            // 触发系统授权弹窗，文本留在剪贴板供手动粘贴
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(options)
+            // 无辅助功能授权时保持静默降级：文本留在剪贴板供手动粘贴。
             return false
         }
 

@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         hotkey.onDown = { [weak self] mode in self?.dictation.keyDown(mode) }
         hotkey.onUp = { [weak self] mode in self?.dictation.keyUp(mode) }
-        hotkey.start()
+        _ = hotkey.start()
 
         #if DEBUG
         // 开发期：GALT_OPEN_CONSOLE=1 启动即打开控制台，便于实机验收
@@ -51,14 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
     }
 
-    /// 首次启动引导授权：麦克风 + 辅助功能（注入文本与监听全局热键所需）
+    /// 首次启动引导授权：麦克风。辅助功能是增强项；未授权时热键走 fallback，文本保留在剪贴板。
     private func requestPermissions() {
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             if !granted { NSLog("Galt: 麦克风权限未授予，无法录音") }
-        }
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(options) {
-            NSLog("Galt: 等待用户在「系统设置 → 隐私与安全性 → 辅助功能」中授权")
         }
     }
 }
