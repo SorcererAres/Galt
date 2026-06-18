@@ -44,8 +44,8 @@ struct RowButtonStyle: ButtonStyle {
                 .background(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(fill))
                 .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .onHover { hovering = $0 }
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
+                .animation(GaltDesign.Motion.hover(reduceMotion), value: hovering)
+                .animation(GaltDesign.Motion.pressed(reduceMotion), value: configuration.isPressed)
         }
     }
 }
@@ -55,7 +55,7 @@ struct RowButtonStyle: ButtonStyle {
 /// 图标 / 紧凑按钮（复制、删除、搜索、关闭、×）。
 /// 默认透明，悬停 / 按下显示圆角底 + 轻微缩放，扩大可点击感与命中区。
 struct IconButtonStyle: ButtonStyle {
-    var cornerRadius: CGFloat = 6
+    var cornerRadius: CGFloat = GaltDesign.Radius.sm
     var padding: CGFloat = 4
 
     func makeBody(configuration: Configuration) -> some View {
@@ -82,8 +82,8 @@ struct IconButtonStyle: ButtonStyle {
                 .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .scaleEffect(configuration.isPressed ? 0.92 : 1)
                 .onHover { hovering = $0 }
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
+                .animation(GaltDesign.Motion.hover(reduceMotion), value: hovering)
+                .animation(GaltDesign.Motion.pressed(reduceMotion), value: configuration.isPressed)
         }
     }
 }
@@ -93,7 +93,7 @@ struct IconButtonStyle: ButtonStyle {
 /// 实心强调按钮（「添加词语」等）。悬停提亮 → primaryHover，按下压暗 → primaryActive。
 struct FilledButtonStyle: ButtonStyle {
     var fill: Color = Palette.primary
-    var cornerRadius: CGFloat = 8
+    var cornerRadius: CGFloat = GaltDesign.Radius.control
 
     func makeBody(configuration: Configuration) -> some View {
         StyleBody(configuration: configuration, fill: fill, cornerRadius: cornerRadius)
@@ -120,8 +120,8 @@ struct FilledButtonStyle: ButtonStyle {
                 .scaleEffect(configuration.isPressed ? 0.98 : 1)
                 .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .onHover { if isEnabled { hovering = $0 } }
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
+                .animation(GaltDesign.Motion.hover(reduceMotion), value: hovering)
+                .animation(GaltDesign.Motion.pressed(reduceMotion), value: configuration.isPressed)
         }
     }
 }
@@ -130,7 +130,7 @@ struct FilledButtonStyle: ButtonStyle {
 
 /// 描边次按钮（「下载」「验证」「获取模型」）。默认透明描边，悬停 / 按下加状态层底。
 struct OutlineButtonStyle: ButtonStyle {
-    var cornerRadius: CGFloat = 8
+    var cornerRadius: CGFloat = GaltDesign.Radius.control
     var border: Color = Palette.borderDefault
 
     func makeBody(configuration: Configuration) -> some View {
@@ -158,8 +158,8 @@ struct OutlineButtonStyle: ButtonStyle {
                 .opacity(isEnabled ? 1 : 0.4)
                 .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .onHover { if isEnabled { hovering = $0 } }
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
+                .animation(GaltDesign.Motion.hover(reduceMotion), value: hovering)
+                .animation(GaltDesign.Motion.pressed(reduceMotion), value: configuration.isPressed)
         }
     }
 }
@@ -186,7 +186,7 @@ struct PressableButtonStyle: ButtonStyle {
             configuration.label
                 .opacity(configuration.isPressed ? pressedOpacity : 1)
                 .scaleEffect(configuration.isPressed ? pressedScale : 1)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
+                .animation(GaltDesign.Motion.pressed(reduceMotion), value: configuration.isPressed)
         }
     }
 }
@@ -208,6 +208,8 @@ struct DropdownPicker: View {
     let options: [DropdownOption]
     /// 可选最小宽度；默认随内容自适应（贴合设计稿的紧凑右对齐盒）。
     var minWidth: CGFloat? = nil
+    /// 盒高；默认 28（紧凑下拉）。与输入框并排时传 36，对齐 FormFieldBox。
+    var height: CGFloat = 28
 
     private var currentTitle: String {
         options.first { $0.value == selection }?.title ?? ""
@@ -240,7 +242,7 @@ struct DropdownPicker: View {
             .padding(.leading, 11)
             .padding(.trailing, 9)
             .frame(minWidth: minWidth, alignment: .leading)
-            .frame(height: 28)
+            .frame(height: height)
             .modifier(HoverBorderBox(idleBorder: Palette.borderDefault))
         }
         .menuStyle(.button)
@@ -256,7 +258,7 @@ struct DropdownPicker: View {
 /// 默认 borderSubtle，悬停 borderHover + 极淡状态层底。系统 Picker / 文本框不用此修饰，
 /// 它们各有自己的 focus / hover 逻辑。
 struct HoverBorderBox: ViewModifier {
-    var cornerRadius: CGFloat = 8
+    var cornerRadius: CGFloat = GaltDesign.Radius.control
     var idleBorder: Color = Palette.borderSubtle
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -269,7 +271,7 @@ struct HoverBorderBox: ViewModifier {
                 .strokeBorder(hovering ? Palette.borderHover : idleBorder, lineWidth: 1))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .onHover { hovering = $0 }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
+            .animation(GaltDesign.Motion.hover(reduceMotion), value: hovering)
     }
 }
 
@@ -298,8 +300,8 @@ struct LinkButtonStyle: ButtonStyle {
                 .opacity(opacity)
                 .contentShape(Rectangle())
                 .onHover { if isEnabled { hovering = $0 } }
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
+                .animation(GaltDesign.Motion.hover(reduceMotion), value: hovering)
+                .animation(GaltDesign.Motion.pressed(reduceMotion), value: configuration.isPressed)
         }
     }
 }

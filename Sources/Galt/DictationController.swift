@@ -149,7 +149,7 @@ final class DictationController {
                 DispatchQueue.main.async {
                     let pasted = TextInjector.inject(final)
                     HistoryStore.shared.append(HistoryRecord(
-                        date: Date(), app: appName, duration: duration, raw: raw, text: final
+                        date: Date(), app: appName, bundleId: bundleId, duration: duration, raw: raw, text: final
                     ))
                     if pasted {
                         self.hud.state.phase = .success(final)

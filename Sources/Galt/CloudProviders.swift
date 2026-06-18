@@ -37,6 +37,47 @@ struct STTProviderInfo: Identifiable {
     }
 }
 
+// MARK: - 火山 ASR 模型(配置驱动:协议 + 资源 + 接口,预设可一键带出,亦可自填)
+
+/// 火山 ASR 的传输协议。不同协议的请求/响应处理是代码(适配器),配置只能在已实现的协议里选。
+enum VolcanoASRProtocol: String, CaseIterable, Identifiable {
+    case flash      // HTTP 一次性(录音文件极速版)
+    case streaming  // WebSocket 流式(流式语音识别大模型)
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .flash: return "一次性 (HTTP)"
+        case .streaming: return "流式 (WebSocket)"
+        }
+    }
+}
+
+/// 一个火山 ASR 模型 = 显示名 + resourceId + 接口地址 + 协议。预设供一键带出,用户可在此基础上自填。
+struct VolcanoASRModel: Identifiable {
+    let id: String
+    let name: String
+    let resourceId: String
+    let endpoint: String
+    let proto: VolcanoASRProtocol
+
+    static let presets: [VolcanoASRModel] = [
+        .init(id: "auc_turbo", name: "录音文件极速版", resourceId: "volc.bigasr.auc_turbo",
+              endpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash", proto: .flash),
+        .init(id: "sauc_duration", name: "流式·小时版", resourceId: "volc.bigasr.sauc.duration",
+              endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel", proto: .streaming),
+        .init(id: "sauc_concurrent", name: "流式·并发版", resourceId: "volc.bigasr.sauc.concurrent",
+              endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel", proto: .streaming),
+    ]
+
+    static var `default`: VolcanoASRModel { presets[0] }
+
+    /// 与给定配置完全一致的预设;无匹配返回 nil(即「自定义」)
+    static func matching(resourceId: String, endpoint: String, proto: VolcanoASRProtocol) -> VolcanoASRModel? {
+        presets.first { $0.resourceId == resourceId && $0.endpoint == endpoint && $0.proto == proto }
+    }
+}
+
 /// 润色/翻译/问答使用的 LLM 厂商（全部 OpenAI 兼容 chat/completions）
 struct LLMProviderInfo: Identifiable {
     let id: String
@@ -107,6 +148,40 @@ struct CloudSTTProvider: STTProvider {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw STTError.empty }
         return trimmed
+    }
+
+    // MARK: 连接验证（模型库「验证」按钮）
+
+    /// 用与真实听写完全相同的链路做连接验证：
+    /// - OpenAI 兼容：走免费的 `GET /models`，不消耗转写额度；
+    /// - 火山 / Qwen3：发一段约 1 秒的验证音频跑真实接口。
+    ///
+    /// 容忍空/无意义的转写结果（验证音频本就无语义），只要传输、鉴权、厂商状态码成功即视为连通。
+    /// 凭证 / 端点 / Resource ID / 协议等取自 SettingsStore（表单各绑定已实时落库）。
+    func verify(providerId: String) async throws {
+        let info = STTProviderInfo.byId(providerId)
+        switch info.kind {
+        case .openAICompatible(let base, _):
+            let key = SettingsStore.shared.sttKey(forProvider: providerId)
+            guard !key.isEmpty else { throw STTError.missingAPIKey }
+            let effectiveBase = SettingsStore.shared.baseURL(forProvider: providerId, default: base)
+            let timeout = SettingsStore.shared.requestTimeout(forProvider: providerId)
+            _ = try await ProviderProbe.fetchModels(base: effectiveBase, key: key, timeout: timeout)
+        case .dashscope:
+            _ = try await transcribeDashScope(wav: Self.verificationWav())
+        case .volcano:
+            _ = try await transcribeVolcano(wav: Self.verificationWav())
+        }
+    }
+
+    /// 连接验证用的最小音频载荷：约 1 秒、16k/16bit、极低音量正弦。
+    /// 用有信号但无语义的音频，既能触达模型、又避免纯静音被部分厂商当作「无音频」拒绝。
+    static func verificationWav() -> Data {
+        let sampleRate = 16000
+        let samples = (0..<sampleRate).map { i in
+            0.03 * sinf(2 * Float.pi * 220 * Float(i) / Float(sampleRate))
+        }
+        return AudioRecorder.wavData(from: samples, sampleRate: sampleRate)
     }
 
     // MARK: OpenAI 兼容（Groq / OpenAI / 硅基流动）
@@ -195,19 +270,43 @@ struct CloudSTTProvider: STTProvider {
         return decoded.output.choices.first?.message.content.compactMap(\.text).joined() ?? ""
     }
 
-    // MARK: 火山引擎（大模型录音识别极速版）
+    // MARK: 火山引擎（按所选模型的协议分发：一次性 HTTP / 流式 WebSocket）
 
     private func transcribeVolcano(wav: Data) async throws -> String {
         let appKey = SettingsStore.shared.volcanoAppKey
         let accessKey = SettingsStore.shared.sttKey(forProvider: "volcano")
         guard !appKey.isEmpty, !accessKey.isEmpty else { throw STTError.missingAPIKey }
 
-        var request = URLRequest(url: URL(string: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash")!)
+        let proto = VolcanoASRProtocol(rawValue: SettingsStore.shared.volcanoProtocol) ?? .flash
+        let resourceId = SettingsStore.shared.volcanoResourceId
+        let endpoint = SettingsStore.shared.volcanoEndpoint
+        let timeout = SettingsStore.shared.requestTimeout(forProvider: "volcano")
+
+        switch proto {
+        case .flash:
+            return try await transcribeVolcanoFlash(
+                wav: wav, endpoint: endpoint, resourceId: resourceId,
+                appKey: appKey, accessKey: accessKey, timeout: timeout
+            )
+        case .streaming:
+            return try await VolcanoStreamingASR.transcribe(
+                wav: wav, endpoint: endpoint, resourceId: resourceId,
+                appKey: appKey, accessKey: accessKey, timeout: timeout
+            )
+        }
+    }
+
+    /// 录音文件识别·一次性 HTTP（极速版 auc_turbo 等 flash 资源）
+    private func transcribeVolcanoFlash(wav: Data, endpoint: String, resourceId: String,
+                                        appKey: String, accessKey: String, timeout: TimeInterval) async throws -> String {
+        guard let url = URL(string: endpoint) else { throw STTError.http(-1, "火山接口地址无效") }
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(appKey, forHTTPHeaderField: "X-Api-App-Key")
         request.setValue(accessKey, forHTTPHeaderField: "X-Api-Access-Key")
-        request.setValue("volc.bigasr.auc_turbo", forHTTPHeaderField: "X-Api-Resource-Id")
+        request.setValue(resourceId, forHTTPHeaderField: "X-Api-Resource-Id")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Api-Request-Id")
         request.setValue("-1", forHTTPHeaderField: "X-Api-Sequence")
 

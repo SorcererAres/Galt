@@ -37,12 +37,14 @@ enum SettingsSidebarItem: CaseIterable, Identifiable {
     }
 }
 
+/// 设置专属设计常量：尺寸度量统一委托 `GaltDesign`（单一真相来源，与控制台共用同一组数值），
+/// 此处仅保留设置语境下的颜色语义别名。
 private enum SettingsDesign {
-    static let outerInset: CGFloat = 8
-    static let sidebarWidth: CGFloat = 232
-    static let contentCornerRadius: CGFloat = 16
-    static let contentMaxWidth: CGFloat = 904
-    static let contentTopPadding: CGFloat = 24
+    static let outerInset = GaltDesign.outerInset
+    static let sidebarWidth = GaltDesign.sidebarWidth
+    static let contentCornerRadius = GaltDesign.panelCornerRadius
+    static let contentMaxWidth = GaltDesign.contentWidth
+    static let contentTopPadding = GaltDesign.contentTopPadding
 
     static let windowBackground = Palette.surfaceCanvas
     static let contentBackground = Palette.surfacePanel
@@ -54,19 +56,21 @@ private enum SettingsDesign {
     static let sectionText = Palette.textPrimary.opacity(0.5)
     static let backText = Palette.textSecondary
 
-    static let sidebarRowHeight: CGFloat = 32
-    static let sidebarRowRadius: CGFloat = 8
-    static let sidebarHorizontalPadding: CGFloat = 10
-    static let sidebarInnerHorizontalPadding: CGFloat = 8
-    static let sidebarIconWidth: CGFloat = 18
-    static let sidebarIconSize: CGFloat = 14
-    static let sidebarTextSize: CGFloat = 14
+    static let sidebarRowHeight = GaltDesign.sidebarRowHeight
+    static let sidebarRowRadius = GaltDesign.sidebarRowRadius
+    static let sidebarHorizontalPadding = GaltDesign.sidebarHorizontalPadding
+    static let sidebarInnerHorizontalPadding = GaltDesign.sidebarInnerHorizontalPadding
+    static let sidebarIconWidth = GaltDesign.sidebarIconWidth
+    static let sidebarIconSize = GaltDesign.sidebarIconSize
+    static let sidebarTextSize = GaltDesign.sidebarTextSize
 }
 
 /// 模型库表单输入框样式：36 高、圆角描边盒（对照设计稿）。
 /// 三态（全中性，契合单色设计）：默认 borderDefault → 悬停 borderHover + 极淡底 →
 /// 聚焦 textTertiary 描边 1.5px + 极淡底（仅描边加深一档表示「已激活」，不引入彩色）。
-private struct FormFieldBox: ViewModifier {
+struct FormFieldBox: ViewModifier {
+    /// 出现时是否自动聚焦（如弹窗内的首个输入框）。设置页表单默认不抢焦点。
+    var autoFocus: Bool = false
     @State private var hovering = false
     @FocusState private var focused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -87,12 +91,71 @@ private struct FormFieldBox: ViewModifier {
             .frame(height: 36)
             .frame(maxWidth: .infinity, alignment: .leading)
             .focused($focused)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(fill))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .background(RoundedRectangle(cornerRadius: GaltDesign.Radius.control, style: .continuous).fill(fill))
+            .overlay(RoundedRectangle(cornerRadius: GaltDesign.Radius.control, style: .continuous)
                 .strokeBorder(border, lineWidth: focused ? 1.5 : 1))
             .onHover { hovering = $0 }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: focused)
+            .onAppear { if autoFocus { DispatchQueue.main.async { focused = true } } }
+            .animation(GaltDesign.Motion.hover(reduceMotion), value: hovering)
+            .animation(GaltDesign.Motion.hover(reduceMotion), value: focused)
+    }
+}
+
+/// 密钥输入框：默认隐藏（SecureField），点右侧眼睛切换为明文（TextField）。
+/// 样式对齐 FormFieldBox（36 高 / 圆角 8 / 三态描边），焦点绑定到内部输入框，
+/// 切换显示态后异步重新取得焦点，避免 Secure↔Plain 替换导致的失焦。
+private struct SecretField: View {
+    let placeholder: String
+    @Binding var text: String
+
+    @State private var revealed = false
+    @State private var hovering = false
+    @FocusState private var focused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var border: Color {
+        if focused { return Palette.textTertiary }
+        if hovering { return Palette.borderHover }
+        return Palette.borderDefault
+    }
+    private var fill: Color { (focused || hovering) ? Palette.stateHover : .clear }
+
+    var body: some View {
+        HStack(spacing: GaltDesign.Spacing.sm) {
+            Group {
+                if revealed {
+                    TextField(placeholder, text: $text)
+                } else {
+                    SecureField(placeholder, text: $text)
+                }
+            }
+            .textFieldStyle(.plain)
+            .font(.system(size: 14))
+            .focused($focused)
+
+            Button {
+                revealed.toggle()
+                DispatchQueue.main.async { focused = true }
+            } label: {
+                Image(systemName: revealed ? "eye.slash" : "eye")
+                    .font(.system(size: 13))
+                    .foregroundStyle(hovering || focused ? Palette.textSecondary : Palette.textTertiary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(revealed ? "隐藏密钥" : "显示密钥")
+        }
+        .padding(.leading, 11)
+        .padding(.trailing, 7)
+        .frame(height: 36)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: GaltDesign.Radius.control, style: .continuous).fill(fill))
+        .overlay(RoundedRectangle(cornerRadius: GaltDesign.Radius.control, style: .continuous)
+            .strokeBorder(border, lineWidth: focused ? 1.5 : 1))
+        .onHover { hovering = $0 }
+        .animation(GaltDesign.Motion.hover(reduceMotion), value: hovering)
+        .animation(GaltDesign.Motion.hover(reduceMotion), value: focused)
     }
 }
 
@@ -284,6 +347,10 @@ struct SettingsView: View {
     @State private var sttKeys: [String: String] = [:]
     @State private var llmKeys: [String: String] = [:]
     @State private var llmModels: [String: String] = [:]
+    // 火山 ASR 模型配置（协议 / 资源 / 接口），write-through 到 SettingsStore
+    @State private var volcanoProtocol = SettingsStore.shared.volcanoProtocol
+    @State private var volcanoResourceId = SettingsStore.shared.volcanoResourceId
+    @State private var volcanoEndpoint = SettingsStore.shared.volcanoEndpoint
     // 删除本地模型后自增，触发 modelLibraryPanel 重新读取文件存在状态
     @State private var modelStateTick = 0
     // 模型库：顶部分段 + 主从选中 + 高级折叠 + 表单提示
@@ -300,7 +367,7 @@ struct SettingsView: View {
     @Namespace private var settingsSelectionPill
     /// 设置分页切换：与控制台一级页一致的平滑弹簧
     private var settingsTabAnimation: Animation? {
-        reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)
+        GaltDesign.Motion.page(reduceMotion)
     }
     @ObservedObject private var downloader = ModelDownloader.shared
 
@@ -318,6 +385,9 @@ struct SettingsView: View {
     private func load() {
         if let initialSelection { sidebarSelection = initialSelection }
         inputDevices = AudioDevices.inputDevices()
+        volcanoProtocol = SettingsStore.shared.volcanoProtocol
+        volcanoResourceId = SettingsStore.shared.volcanoResourceId
+        volcanoEndpoint = SettingsStore.shared.volcanoEndpoint
         reloadSTTFields()
         reloadLLMFields()
         for provider in STTProviderInfo.all {
@@ -373,7 +443,7 @@ struct SettingsView: View {
             .formStyle(.grouped)
             .tabItem { Label("通用", systemImage: "gearshape") }
         }
-        .padding(.top, 4)
+        .padding(.top, GaltDesign.Spacing.xxs)
     }
 
     private var sidebarBody: some View {
@@ -416,7 +486,7 @@ struct SettingsView: View {
                 NSApp.keyWindow?.performClose(nil)
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: GaltDesign.Spacing.xs) {
                 SettingsSidebarIcon(kind: .back)
                     .frame(width: SettingsDesign.sidebarIconWidth, height: 16)
                 Text("返回应用")
@@ -437,7 +507,7 @@ struct SettingsView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(SettingsDesign.sectionText)
                 .padding(.leading, 18)
-                .padding(.trailing, 12)
+                .padding(.trailing, GaltDesign.Spacing.md)
                 .padding(.top, 15)
                 .padding(.bottom, 5)
             ForEach(items) { item in
@@ -450,7 +520,7 @@ struct SettingsView: View {
         Button {
             withAnimation(settingsTabAnimation) { sidebarSelection = item }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: GaltDesign.Spacing.xs) {
                 SettingsSidebarIcon(kind: item.iconKind)
                     .frame(width: SettingsDesign.sidebarIconWidth, height: 16)
                 Text(item.title)
@@ -490,8 +560,8 @@ struct SettingsView: View {
     }
 
     private var scrollingSettingsContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+        BrandScrollView {
+            VStack(alignment: .leading, spacing: GaltDesign.Spacing.xl) {
                 Text(sidebarSelection.title)
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(SettingsDesign.primaryText)
@@ -524,7 +594,7 @@ struct SettingsView: View {
     /// 模型库：固定头部（标题 + 分段）+ 可滚动内容
     private var modelLibraryScreen: some View {
         let _ = modelStateTick
-        return VStack(alignment: .leading, spacing: 16) {
+        return VStack(alignment: .leading, spacing: GaltDesign.Spacing.lg) {
             Text("模型库")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(SettingsDesign.primaryText)
@@ -534,7 +604,7 @@ struct SettingsView: View {
         }
         .frame(maxWidth: SettingsDesign.contentMaxWidth, alignment: .leading)
         .padding(.top, SettingsDesign.contentTopPadding)
-        .padding(.bottom, 24)
+        .padding(.bottom, GaltDesign.Spacing.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -542,7 +612,7 @@ struct SettingsView: View {
     private var modelLibraryBody: some View {
         switch librarySegment {
         case "local":
-            ScrollView { localModelsList.padding(.bottom, 8) }
+            BrandScrollView { localModelsList.padding(.bottom, GaltDesign.Spacing.sm) }
         case "llm":
             providerMasterDetail(isSTT: false)
         default:
@@ -671,12 +741,12 @@ struct SettingsView: View {
     // 标题与分段由 modelLibraryScreen 固定承载，内容区单独滚动。
 
     private var librarySegmentControl: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: GaltDesign.Spacing.xxs) {
             librarySegmentButton("转写厂商", "stt")
             librarySegmentButton("润色厂商", "llm")
             librarySegmentButton("本地模型", "local")
         }
-        .padding(2)
+        .padding(GaltDesign.Spacing.xxxs)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Palette.track))
     }
 
@@ -689,13 +759,13 @@ struct SettingsView: View {
             Text(title)
                 .font(.system(size: 12, weight: .regular))
                 .foregroundStyle(SettingsDesign.rowTitle)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, GaltDesign.Spacing.md)
+                .padding(.vertical, GaltDesign.Spacing.xs)
                 .background {
                     if librarySegment == value {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        RoundedRectangle(cornerRadius: GaltDesign.Radius.control, style: .continuous)
                             .fill(Palette.surfaceRaised)
-                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.borderSubtle, lineWidth: 1))
+                            .overlay(RoundedRectangle(cornerRadius: GaltDesign.Radius.control, style: .continuous).strokeBorder(Palette.borderSubtle, lineWidth: 1))
                     }
                 }
                 .contentShape(Rectangle())
@@ -706,14 +776,14 @@ struct SettingsView: View {
     // MARK: 本地模型卡片列表
 
     private var localModelsList: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: GaltDesign.Spacing.md) {
             modelCard(title: "Apple 设备端听写", subtitle: "系统内置、零下载。首次使用会请求「语音识别」权限。") {
                 Text("已授权")
                     .font(.system(size: 12))
                     .foregroundStyle(SettingsDesign.rowTitle)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, GaltDesign.Spacing.md)
                     .frame(height: 28)
-                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
+                    .background(RoundedRectangle(cornerRadius: GaltDesign.Radius.control, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
             }
             ForEach(WhisperModel.all) { model in
                 modelCard(
@@ -737,8 +807,8 @@ struct SettingsView: View {
     }
 
     private func modelCard<Trailing: View>(title: String, subtitle: String, @ViewBuilder trailing: () -> Trailing) -> some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: GaltDesign.Spacing.lg) {
+            VStack(alignment: .leading, spacing: GaltDesign.Spacing.xxs) {
                 Text(title)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(SettingsDesign.rowTitle)
@@ -750,21 +820,21 @@ struct SettingsView: View {
             trailing()
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.vertical, GaltDesign.Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.clear))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GaltDesign.Radius.card, style: .continuous).fill(Color.clear))
+        .overlay(RoundedRectangle(cornerRadius: GaltDesign.Radius.card, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
     }
 
     @ViewBuilder
     private func whisperModelControl(_ model: WhisperModel) -> some View {
         if downloader.downloadingId == model.id {
-            HStack(spacing: 8) {
+            HStack(spacing: GaltDesign.Spacing.sm) {
                 ProgressView(value: downloader.progress).frame(width: 120)
                 Text("\(Int(downloader.progress * 100))%").font(.caption).monospacedDigit()
             }
         } else if model.isDownloaded {
-            HStack(spacing: 12) {
+            HStack(spacing: GaltDesign.Spacing.md) {
                 if whisperModelId != model.id {
                     Button("设为默认") { whisperModelId = model.id }
                         .buttonStyle(LinkButtonStyle())
@@ -784,7 +854,7 @@ struct SettingsView: View {
                 Text("下载")
                     .font(.system(size: 12))
                     .foregroundStyle(SettingsDesign.rowTitle)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, GaltDesign.Spacing.md)
                     .frame(height: 28)
             }
             .buttonStyle(OutlineButtonStyle())
@@ -805,20 +875,20 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.clear))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GaltDesign.Radius.panel, style: .continuous).fill(Color.clear))
+        .overlay(RoundedRectangle(cornerRadius: GaltDesign.Radius.panel, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
     }
 
     @ViewBuilder
     private func providerList(isSTT: Bool) -> some View {
         let ids: [String] = isSTT ? STTProviderInfo.all.map(\.id) : LLMProviderInfo.all.map(\.id)
-        VStack(spacing: 4) {
+        VStack(spacing: GaltDesign.Spacing.xxs) {
             ForEach(ids, id: \.self) { id in
                 providerListItem(id: id, name: providerDisplayName(id, isSTT: isSTT), isSTT: isSTT)
             }
             Spacer(minLength: 0)
         }
-        .padding(16)
+        .padding(GaltDesign.Spacing.lg)
     }
 
     /// 模型库列表/表单用的短展示名（对照设计稿，避免完整长名截断）
@@ -837,7 +907,7 @@ struct SettingsView: View {
             formMessage = ""
             fetchedModels = []
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: GaltDesign.Spacing.sm) {
                 Text(name)
                     .font(.system(size: 14))
                     .foregroundStyle(Palette.textPrimary)
@@ -847,7 +917,7 @@ struct SettingsView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.textSecondary)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, GaltDesign.Spacing.md)
             .frame(height: 36)
         }
         .buttonStyle(RowButtonStyle(isSelected: selected))
@@ -859,11 +929,12 @@ struct SettingsView: View {
         let name = providerDisplayName(id, isSTT: isSTT)
         let configured = isSTT ? !(sttKeys[id] ?? "").isEmpty : !(llmKeys[id] ?? "").isEmpty
         let needsAppKey = isSTT && STTProviderInfo.byId(id).needsAppKey
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        // 容器有 16pt 圆角描边：滚动条内缩，避开圆角、不溢出边框
+        BrandScrollView(scrollbarInset: EdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 6)) {
+            VStack(alignment: .leading, spacing: GaltDesign.Spacing.lg) {
                 // 头部：名称/状态 + 保存（按设计稿无头像，文字直接靠左）
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: GaltDesign.Spacing.md) {
+                    VStack(alignment: .leading, spacing: GaltDesign.Spacing.xxxs) {
                         Text(name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.textPrimary)
                         Text(configured ? "已配置" : "未配置").font(.system(size: 12)).foregroundStyle(SettingsDesign.rowSubtitle)
                     }
@@ -873,15 +944,14 @@ struct SettingsView: View {
                         formMessage = "已保存"
                     } label: {
                         Text("保存").font(.system(size: 12)).foregroundStyle(Palette.onPrimary)
-                            .padding(.horizontal, 12).frame(height: 28)
+                            .padding(.horizontal, GaltDesign.Spacing.md).frame(height: 28)
                     }
                     .buttonStyle(FilledButtonStyle())
                 }
 
                 formField(label: "API 密钥", required: true) {
-                    SecureField(needsAppKey ? "Access Token（X-Api-Access-Key）" : "sk-..", text: isSTT ? sttKeyBinding(id) : llmKeyBinding(id))
-                        .textFieldStyle(.plain)
-                        .modifier(FormFieldBox())
+                    SecretField(placeholder: needsAppKey ? "Access Token（X-Api-Access-Key）" : "sk-..",
+                                text: isSTT ? sttKeyBinding(id) : llmKeyBinding(id))
                 }
                 if needsAppKey {
                     formField(label: "App ID", required: true) {
@@ -893,15 +963,20 @@ struct SettingsView: View {
                             }
                     }
                 }
-                formField(label: "接口地址", optional: true) {
-                    TextField(defaultBaseURL(id, isSTT: isSTT), text: baseURLBinding(id))
-                        .textFieldStyle(.plain)
-                        .modifier(FormFieldBox())
+                // 通用「接口地址」只对 OpenAI 兼容厂商 + LLM 生效；火山有独立 endpoint、
+                // dashscope 走专用链路，都不消费它，故隐藏以免误导（见 usesGenericBaseURL）。
+                if usesGenericBaseURL(id, isSTT: isSTT) {
+                    formField(label: "接口地址", optional: true) {
+                        TextField(defaultBaseURL(id, isSTT: isSTT), text: baseURLBinding(id))
+                            .textFieldStyle(.plain)
+                            .modifier(FormFieldBox())
+                    }
                 }
 
                 HStack(spacing: 10) {
+                    // 验证对所有厂商开放（非 OpenAI 兼容走验证音频）；获取模型仍仅 OpenAI 兼容可用。
                     formSecondaryButton("验证") { probeProvider(id: id, isSTT: isSTT, fetch: false) }
-                        .disabled(!providerProbable(id, isSTT: isSTT) || isProbing)
+                        .disabled(isProbing)
                     formSecondaryButton("获取模型") { probeProvider(id: id, isSTT: isSTT, fetch: true) }
                         .disabled(!providerProbable(id, isSTT: isSTT) || isProbing)
                     if isProbing {
@@ -909,48 +984,45 @@ struct SettingsView: View {
                     } else if !formMessage.isEmpty {
                         Text(formMessage).font(.system(size: 12)).foregroundStyle(SettingsDesign.rowSubtitle).lineLimit(1)
                     } else if !providerProbable(id, isSTT: isSTT) {
-                        Text("该厂商暂不支持自动获取").font(.system(size: 12)).foregroundStyle(SettingsDesign.rowSubtitle)
+                        Text("该厂商不支持自动获取模型，可点「验证」测试连接").font(.system(size: 12)).foregroundStyle(SettingsDesign.rowSubtitle)
                     }
                 }
-                if !fetchedModels.isEmpty {
-                    Menu {
-                        ForEach(fetchedModels, id: \.self) { m in
-                            Button(m) { if !isSTT { llmModelBinding(id).wrappedValue = m } }
-                        }
-                    } label: {
-                        Text("已获取 \(fetchedModels.count) 个模型，点此选用")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Palette.primary)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                }
-
                 Divider().overlay(Palette.borderDefault)
 
-                formField(label: "模型", required: true) {
-                    if isSTT {
-                        // 转写模型固定，只读展示（沿用既有「转写只读」约定）
-                        Text(sttModelName(STTProviderInfo.byId(id)))
-                            .font(.system(size: 14))
-                            .foregroundStyle(SettingsDesign.rowSubtitle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .modifier(FormFieldBox())
-                    } else {
-                        TextField("输入模型名称", text: llmModelBinding(id))
-                            .textFieldStyle(.plain)
-                            .modifier(FormFieldBox())
+                if id == "volcano" {
+                    // 火山支持多模型：预设一键带出 + 协议/资源/接口可自填
+                    volcanoModelSection()
+                } else {
+                    formField(label: "模型", required: true) {
+                        if isSTT {
+                            // 转写模型固定，只读展示（沿用既有「转写只读」约定）
+                            Text(sttModelName(STTProviderInfo.byId(id)))
+                                .font(.system(size: 14))
+                                .foregroundStyle(SettingsDesign.rowSubtitle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .modifier(FormFieldBox())
+                        } else {
+                            // 可输入 + 可下拉：获取到模型后，右侧 ⌄ 直接选用（耦合原「点此选用」菜单）
+                            TextField("输入模型名称", text: llmModelBinding(id))
+                                .textFieldStyle(.plain)
+                                .modifier(FormFieldBox())
+                                .overlay(alignment: .trailing) { fetchedModelsMenu(id: id) }
+                        }
                     }
+                    Text(isSTT
+                         ? "转写模型由厂商固定。"
+                         : (fetchedModels.isEmpty
+                            ? "尚未加载模型。可先「获取模型」，或手动输入模型名称。"
+                            : "已获取 \(fetchedModels.count) 个模型，点输入框右侧 ⌄ 选用，或手动输入。"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(SettingsDesign.rowSubtitle)
                 }
-                Text("尚未加载模型。可先获取模型，或手动输入模型名称。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(SettingsDesign.rowSubtitle)
 
                 Divider().overlay(Palette.borderDefault)
 
                 advancedOptions(id: id)
             }
-            .padding(32)
+            .padding(GaltDesign.Spacing.xxl)
         }
     }
 
@@ -959,7 +1031,7 @@ struct SettingsView: View {
         Button {
             withAnimation(settingsTabAnimation) { showAdvancedOptions.toggle() }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: GaltDesign.Spacing.xs) {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Palette.textSecondary)
@@ -984,8 +1056,8 @@ struct SettingsView: View {
     }
 
     private func formField<Content: View>(label: String, required: Bool = false, optional: Bool = false, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 2) {
+        VStack(alignment: .leading, spacing: GaltDesign.Spacing.xs) {
+            HStack(spacing: GaltDesign.Spacing.xxxs) {
                 Text(label).font(.system(size: 14)).foregroundStyle(Palette.textSecondary)
                 if required { Text("*").font(.system(size: 14)).foregroundStyle(Palette.danger) }
                 if optional { Text("（可选）").font(.system(size: 14)).foregroundStyle(SettingsDesign.rowSubtitle) }
@@ -997,7 +1069,7 @@ struct SettingsView: View {
     private func formSecondaryButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title).font(.system(size: 12)).foregroundStyle(Palette.textPrimary)
-                .padding(.horizontal, 12).frame(height: 28)
+                .padding(.horizontal, GaltDesign.Spacing.md).frame(height: 28)
         }
         .buttonStyle(OutlineButtonStyle())
     }
@@ -1009,16 +1081,37 @@ struct SettingsView: View {
         return false
     }
 
+    /// 是否消费通用「接口地址」(base URL)。OpenAI 兼容 STT 与所有 LLM 走通用 base；
+    /// dashscope STT 走专用链路、volcano 有独立 endpoint 字段，二者均不读它。
+    private func usesGenericBaseURL(_ id: String, isSTT: Bool) -> Bool {
+        guard isSTT else { return true }
+        if case .openAICompatible = STTProviderInfo.byId(id).kind { return true }
+        return false
+    }
+
     private func probeProvider(id: String, isSTT: Bool, fetch: Bool) {
         let key = isSTT ? (sttKeys[id] ?? "") : (llmKeys[id] ?? "")
         guard !key.isEmpty else { formMessage = "请先填写 API 密钥"; return }
-        let base = SettingsStore.shared.baseURL(forProvider: id, default: defaultBaseURL(id, isSTT: isSTT))
-        let timeout = SettingsStore.shared.requestTimeout(forProvider: id)
         isProbing = true
         formMessage = ""
-        fetchedModels = []
+        if fetch { fetchedModels = [] }
+
+        // 「验证」对非 OpenAI 兼容的 STT 厂商（火山 / Qwen3）走「验证音频跑真实链路」；
+        // 「获取模型」以及 OpenAI 兼容 / LLM 的验证仍走免费 GET /models。
+        let useAudioVerify = !fetch && isSTT && !providerProbable(id, isSTT: true)
+
         Task {
             do {
+                if useAudioVerify {
+                    try await CloudSTTProvider().verify(providerId: id)
+                    await MainActor.run {
+                        isProbing = false
+                        formMessage = "✓ 连接成功"
+                    }
+                    return
+                }
+                let base = SettingsStore.shared.baseURL(forProvider: id, default: defaultBaseURL(id, isSTT: isSTT))
+                let timeout = SettingsStore.shared.requestTimeout(forProvider: id)
                 let models = try await ProviderProbe.fetchModels(base: base, key: key, timeout: timeout)
                 await MainActor.run {
                     isProbing = false
@@ -1060,6 +1153,103 @@ struct SettingsView: View {
     private func advancedBinding(_ id: String, key: String) -> Binding<String> {
         Binding(get: { UserDefaults.standard.string(forKey: "providerAdv.\(key).\(id)") ?? "" },
                 set: { UserDefaults.standard.set($0, forKey: "providerAdv.\(key).\(id)") })
+    }
+
+    // MARK: 火山 ASR 模型配置（预设 + 自填 endpoint/resourceId/协议）
+
+    private var volcanoProtocolBinding: Binding<String> {
+        Binding(get: { volcanoProtocol },
+                set: { volcanoProtocol = $0; SettingsStore.shared.volcanoProtocol = $0 })
+    }
+    private var volcanoResourceIdBinding: Binding<String> {
+        Binding(get: { volcanoResourceId },
+                set: { volcanoResourceId = $0; SettingsStore.shared.volcanoResourceId = $0.trimmingCharacters(in: .whitespaces) })
+    }
+    private var volcanoEndpointBinding: Binding<String> {
+        Binding(get: { volcanoEndpoint },
+                set: { volcanoEndpoint = $0; SettingsStore.shared.volcanoEndpoint = $0.trimmingCharacters(in: .whitespaces) })
+    }
+
+    private func applyVolcanoPreset(_ p: VolcanoASRModel) {
+        volcanoProtocol = p.proto.rawValue; SettingsStore.shared.volcanoProtocol = p.proto.rawValue
+        volcanoResourceId = p.resourceId; SettingsStore.shared.volcanoResourceId = p.resourceId
+        volcanoEndpoint = p.endpoint; SettingsStore.shared.volcanoEndpoint = p.endpoint
+    }
+
+    /// 预设选择：值为预设 id 或 "custom"（配置不匹配任何预设时）
+    private var volcanoPresetBinding: Binding<String> {
+        Binding(
+            get: {
+                VolcanoASRModel.matching(
+                    resourceId: volcanoResourceId, endpoint: volcanoEndpoint,
+                    proto: VolcanoASRProtocol(rawValue: volcanoProtocol) ?? .flash
+                )?.id ?? "custom"
+            },
+            set: { value in
+                if let preset = VolcanoASRModel.presets.first(where: { $0.id == value }) {
+                    applyVolcanoPreset(preset)
+                }
+                // "custom"：保持当前字段不变
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func volcanoModelSection() -> some View {
+        let presetOptions = VolcanoASRModel.presets.map { DropdownOption(value: $0.id, title: $0.name) }
+            + [DropdownOption(value: "custom", title: "自定义")]
+        formField(label: "模型预设", optional: true) {
+            DropdownPicker(selection: volcanoPresetBinding, options: presetOptions, height: 36)
+        }
+        formField(label: "协议", required: true) {
+            DropdownPicker(
+                selection: volcanoProtocolBinding,
+                options: VolcanoASRProtocol.allCases.map { DropdownOption(value: $0.rawValue, title: $0.displayName) },
+                height: 36
+            )
+        }
+        formField(label: "Resource ID", required: true) {
+            TextField("volc.bigasr.…", text: volcanoResourceIdBinding)
+                .textFieldStyle(.plain)
+                .modifier(FormFieldBox())
+        }
+        formField(label: "接口地址", required: true) {
+            TextField("https://… 或 wss://…", text: volcanoEndpointBinding)
+                .textFieldStyle(.plain)
+                .modifier(FormFieldBox())
+        }
+        Text("预设可一键带出官方配置；也可自行修改 Resource ID / 接口地址或切换协议。流式走 WebSocket（wss），一次性走 HTTP（https）。")
+            .font(.system(size: 12))
+            .foregroundStyle(SettingsDesign.rowSubtitle)
+    }
+
+    /// 模型输入框右侧的「已获取模型」下拉：仅在获取到模型时出现，选中即填入输入框。
+    @ViewBuilder
+    private func fetchedModelsMenu(id: String) -> some View {
+        if !fetchedModels.isEmpty {
+            Menu {
+                Text("已获取 \(fetchedModels.count) 个模型")
+                ForEach(fetchedModels, id: \.self) { model in
+                    Button {
+                        llmModelBinding(id).wrappedValue = model
+                    } label: {
+                        if model == llmModels[id] { Label(model, systemImage: "checkmark") }
+                        else { Text(model) }
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Palette.textSecondary)
+                    .frame(width: 22, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .padding(.trailing, GaltDesign.Spacing.xs)
+        }
     }
 
     /// 转写厂商的模型名当前在代码中固定，仅只读展示
@@ -1174,7 +1364,7 @@ struct SettingsView: View {
     /// 迷你窗口卡片：红绿灯 + 几条占位条，深色态用深底深条
     private func miniWindowCard(dark: Bool) -> some View {
         let bar = dark ? Color(hex: 0x2F3034) : Color(hex: 0xF2F2F2)
-        return VStack(alignment: .leading, spacing: 2) {
+        return VStack(alignment: .leading, spacing: GaltDesign.Spacing.xxxs) {
             HStack(spacing: 1.5) {
                 Circle().fill(Color(hex: 0xF2695A)).frame(width: 3, height: 3)
                 Circle().fill(Color(hex: 0xF7BE4A)).frame(width: 3, height: 3)
@@ -1186,7 +1376,7 @@ struct SettingsView: View {
             RoundedRectangle(cornerRadius: 1, style: .continuous).fill(bar).frame(width: 18, height: 2)
             Spacer(minLength: 0)
         }
-        .padding(4)
+        .padding(GaltDesign.Spacing.xxs)
         .frame(width: 40, height: 28, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -1208,18 +1398,18 @@ struct SettingsView: View {
                     .foregroundStyle(SettingsDesign.rowTitle)
                 Divider()
                     .overlay(SettingsDesign.contentBorder)
-                    .padding(.top, 12)
-                    .padding(.bottom, 4)
+                    .padding(.top, GaltDesign.Spacing.md)
+                    .padding(.bottom, GaltDesign.Spacing.xxs)
             }
-            VStack(spacing: 12) {
+            VStack(spacing: GaltDesign.Spacing.md) {
                 content()
             }
         }
     }
 
     private func settingsRow<Control: View>(title: String, subtitle: String, @ViewBuilder control: () -> Control) -> some View {
-        HStack(alignment: .center, spacing: 24) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: GaltDesign.Spacing.xl) {
+            VStack(alignment: .leading, spacing: GaltDesign.Spacing.xxs) {
                 Text(title)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(SettingsDesign.rowTitle)
@@ -1270,7 +1460,7 @@ struct SettingsView: View {
     }
 
     private func hotkeyPicker(_ title: String, id: String, subtitle: String, selection: Binding<String>, allowNone: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: GaltDesign.Spacing.xxs) {
             HStack {
                 Text(title)
                 Spacer(minLength: 12)
@@ -1341,7 +1531,7 @@ struct SettingsView: View {
                 }
             }
             Toggle(isOn: $soundFeedback) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: GaltDesign.Spacing.xxxs) {
                     Text("交互声音")
                     Text("为开始/停止等关键操作播放声音")
                         .font(.caption)
@@ -1349,7 +1539,7 @@ struct SettingsView: View {
                 }
             }
             Toggle(isOn: $muteWhileDictating) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: GaltDesign.Spacing.xxxs) {
                     Text("语音输入时静音")
                     Text("在语音输入时自动静音其他活动音频")
                         .font(.caption)
@@ -1375,7 +1565,7 @@ struct SettingsView: View {
                 SettingsStore.shared.applyAppearance()
             }
             Toggle(isOn: $launchAtLogin) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: GaltDesign.Spacing.xxxs) {
                     Text("登录时启动应用")
                     Text("当您的电脑启动时，自动打开 Galt")
                         .font(.caption)
@@ -1394,7 +1584,7 @@ struct SettingsView: View {
                 }
             }
             Toggle(isOn: $showInDock) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: GaltDesign.Spacing.xxxs) {
                     Text("在 Dock 中显示应用")
                     Text("在 Dock 中显示 Galt 图标，便于快速访问")
                         .font(.caption)
@@ -1510,7 +1700,7 @@ struct SettingsView: View {
     private var polishSection: some View {
         Section {
             Toggle(isOn: $polishEnabled) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: GaltDesign.Spacing.xxxs) {
                     Text("启用 LLM 润色")
                     Text("去填充词、自动标点、按目标应用调整语气")
                         .font(.caption)

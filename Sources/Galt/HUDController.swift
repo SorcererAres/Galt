@@ -192,7 +192,7 @@ struct HUDView: View {
         VStack {
             Spacer()
             phaseView
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: state.phase)
+                .animation(GaltDesign.Motion.highlight(reduceMotion), value: state.phase)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
@@ -239,19 +239,19 @@ struct HUDView: View {
                 Text("正在转写润色…").foregroundStyle(.secondary)
             }
         case .success(let text):
-            HStack(spacing: 8) {
+            HStack(spacing: GaltDesign.Spacing.sm) {
                 SuccessIcon()
                 Text(text).lineLimit(1).truncationMode(.tail)
             }
             .frame(maxWidth: 400)
         case .error(let message):
-            HStack(spacing: 8) {
+            HStack(spacing: GaltDesign.Spacing.sm) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(Palette.warning)
                 Text(message).lineLimit(2).frame(maxWidth: 400)
             }
         case .empty:
-            HStack(spacing: 8) {
+            HStack(spacing: GaltDesign.Spacing.sm) {
                 Image(systemName: "mic.slash.fill")
                     .foregroundStyle(.secondary)
                 Text("未捕获到语音").foregroundStyle(.secondary)
@@ -278,7 +278,7 @@ private struct RecordingPill: View {
     private static let stroke = Color(hex: 0x2D2D2D)
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: GaltDesign.Spacing.xxs) {
             // 红点跟随音量轻微膨胀 + 弱光晕，作为整体「活气」的视觉锚点
             ZStack {
                 Circle()
@@ -313,7 +313,7 @@ private struct RecordingPill: View {
             .help("完成听写")
             .accessibilityLabel("完成听写")
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, GaltDesign.Spacing.sm)
         .frame(height: 36)
         .background(Self.fill)
         .clipShape(Capsule())
@@ -393,7 +393,7 @@ struct LevelBars: View {
         // TimelineView 每帧重绘：让「呼吸基线」即使没说话也持续微动
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
             let elapsed = context.date.timeIntervalSince(birth)
-            HStack(spacing: 2) {
+            HStack(spacing: GaltDesign.Spacing.xxxs) {
                 ForEach(0..<Self.count, id: \.self) { i in
                     let amp = combinedAmplitude(at: i, time: elapsed)
                     Capsule()

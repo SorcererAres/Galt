@@ -17,13 +17,14 @@ struct OnboardingView: View {
     @State private var step: Step = .welcome
     @State private var microphoneStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @State private var speechStatus = SFSpeechRecognizer.authorizationStatus()
+    // 辅助功能授权状态：AXIsProcessTrusted() 不可观察，用 @State 缓存并定时/回前台刷新
+    @State private var accessibilityGranted = AXIsProcessTrusted()
     @AppStorage("dictationHotkey") private var dictationHotkey = "fn"
     @AppStorage("localLocaleId") private var localLocale = "zh-CN"
     @AppStorage("engineMode") private var engineMode = "auto"
 
-    private var accessibilityGranted: Bool {
-        AXIsProcessTrusted()
-    }
+    /// 权限页轮询：用户去系统设置授权后回来即时反映
+    private let permissionPoll = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var onboardingAnimation: Animation {
         reduceMotion ? .easeOut(duration: 0.12) : .interpolatingSpring(stiffness: 260, damping: 30)
@@ -40,9 +41,6 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            ConsoleDesign.contentBackground
-                .ignoresSafeArea()
-
             VStack(alignment: .leading, spacing: 0) {
                 progressBar
                     .padding(.top, 44)
@@ -60,8 +58,17 @@ struct OnboardingView: View {
             }
             .padding(.horizontal, 28)
         }
-        .frame(width: 480, height: 600)
+        .frame(width: GaltDesign.Onboarding.windowSize.width, height: GaltDesign.Onboarding.windowSize.height)
+        .background(ConsoleDesign.contentBackground)
+        .ignoresSafeArea() // 内容铺满至标题栏区域；四角由系统不透明标题栏窗口自动圆角（见 OnboardingWindowController）
         .onAppear(perform: refreshPermissionStatus)
+        // 回到前台（从系统设置授权返回）即刷新；权限页期间每秒兜底轮询
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshPermissionStatus()
+        }
+        .onReceive(permissionPoll) { _ in
+            if step == .permissions { refreshPermissionStatus() }
+        }
     }
 
     private var header: some View {
@@ -130,7 +137,7 @@ struct OnboardingView: View {
                 stagedRow(0) {
                     infoRow(
                         icon: "keyboard",
-                        title: "按住 fn 说话",
+                        title: "按住 \(HotkeyCombo.dictationDisplay) 说话",
                         text: "松开后，Galt 会自动转写、润色，并插入到当前光标位置。"
                     )
                 }
@@ -169,7 +176,7 @@ struct OnboardingView: View {
                         title: "允许辅助功能访问",
                         text: "将文本粘贴到应用中并与系统交互，仅在必要时使用。",
                         isGranted: accessibilityGranted,
-                        actionTitle: accessibilityGranted ? "已授权" : "允许"
+                        actionTitle: accessibilityGranted ? "已允许" : "允许"
                     ) {
                         openAccessibilitySettings()
                     }
@@ -190,30 +197,30 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 40) {
                 stagedRow(0) {
                     preferenceRow(title: "语音输入快捷键", text: "之后可以在设置中调整。") {
-                        compactPicker(selection: $dictationHotkey) {
-                            Text("Fn").tag("fn")
-                            Text("Right Cmd").tag("rcmd")
-                            Text("Right Option").tag("ropt")
-                            Text("Control").tag("ctrl")
-                        }
+                        DropdownPicker(selection: $dictationHotkey, options: [
+                            DropdownOption(value: "fn", title: "Fn"),
+                            DropdownOption(value: "rcmd", title: "Right Cmd"),
+                            DropdownOption(value: "ropt", title: "Right Option"),
+                            DropdownOption(value: "ctrl", title: "Control"),
+                        ])
                     }
                 }
                 stagedRow(1) {
                     preferenceRow(title: "听写语言", text: "Apple 本地识别会使用这个语言变体。") {
-                        compactPicker(selection: $localLocale) {
-                            Text("简体中文").tag("zh-CN")
-                            Text("English").tag("en-US")
-                            Text("日本語").tag("ja-JP")
-                        }
+                        DropdownPicker(selection: $localLocale, options: [
+                            DropdownOption(value: "zh-CN", title: "简体中文"),
+                            DropdownOption(value: "en-US", title: "English"),
+                            DropdownOption(value: "ja-JP", title: "日本語"),
+                        ])
                     }
                 }
                 stagedRow(2) {
                     preferenceRow(title: "转写模式", text: "自动模式会优先使用云端，失败时回退本地。") {
-                        compactPicker(selection: $engineMode) {
-                            Text("自动").tag("auto")
-                            Text("仅本地").tag("local")
-                            Text("仅云端").tag("cloud")
-                        }
+                        DropdownPicker(selection: $engineMode, options: [
+                            DropdownOption(value: "auto", title: "自动"),
+                            DropdownOption(value: "local", title: "仅本地"),
+                            DropdownOption(value: "cloud", title: "仅云端"),
+                        ])
                     }
                 }
             }
@@ -241,7 +248,7 @@ struct OnboardingView: View {
 
     private var microphoneActionTitle: String {
         switch microphoneStatus {
-        case .authorized: return "已授权"
+        case .authorized: return "已允许"
         case .denied, .restricted: return "允许"
         case .notDetermined: return "允许"
         @unknown default: return "检查"
@@ -250,7 +257,7 @@ struct OnboardingView: View {
 
     private var speechActionTitle: String {
         switch speechStatus {
-        case .authorized: return "已授权"
+        case .authorized: return "已允许"
         case .denied, .restricted: return "允许"
         case .notDetermined: return "允许"
         @unknown default: return "检查"
@@ -264,9 +271,9 @@ struct OnboardingView: View {
     }
 
     private func infoRow(icon: String, title: String, text: String, height: CGFloat = 40) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: GaltDesign.Spacing.md) {
             iconTile(icon: icon, isGranted: false)
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: GaltDesign.Spacing.xs) {
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.primary)
@@ -290,9 +297,9 @@ struct OnboardingView: View {
         actionTitle: String,
         action: @escaping () -> Void
     ) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: GaltDesign.Spacing.md) {
             iconTile(icon: icon, isGranted: isGranted)
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: GaltDesign.Spacing.xs) {
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.primary)
@@ -303,15 +310,13 @@ struct OnboardingView: View {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(width: 300, alignment: .leading)
-
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Button(actionTitle, action: action)
                 .buttonStyle(OnboardingSecondaryButtonStyle())
                 .disabled(isGranted)
         }
-        .frame(width: 430, height: 40, alignment: .leading)
+        .frame(width: 424, height: 40, alignment: .leading)
     }
 
     private func preferenceRow<Control: View>(
@@ -320,7 +325,7 @@ struct OnboardingView: View {
         @ViewBuilder control: () -> Control
     ) -> some View {
         HStack(alignment: .center, spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: GaltDesign.Spacing.xs) {
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.primary)
@@ -350,21 +355,6 @@ struct OnboardingView: View {
             )
     }
 
-    private func compactPicker<Selection: Hashable, Content: View>(
-        selection: Binding<Selection>,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        Picker("", selection: selection, content: content)
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .controlSize(.small)
-            .frame(width: 112, height: 28)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(ConsoleDesign.subtleFill)
-            )
-    }
-
     private func advance() {
         guard let index = Step.allCases.firstIndex(of: step) else { return }
         if step == .preferences {
@@ -381,6 +371,7 @@ struct OnboardingView: View {
     private func refreshPermissionStatus() {
         microphoneStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         speechStatus = SFSpeechRecognizer.authorizationStatus()
+        accessibilityGranted = AXIsProcessTrusted()
     }
 
     private func requestMicrophone() {
@@ -429,6 +420,7 @@ private struct OnboardingPrimaryButtonStyle: ButtonStyle {
         let configuration: ButtonStyle.Configuration
 
         @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
         @State private var isHovered = false
 
         private var fill: Color {
@@ -446,19 +438,19 @@ private struct OnboardingPrimaryButtonStyle: ButtonStyle {
             configuration.label
                 .foregroundStyle(textColor)
                 .frame(width: 424, height: 52)
-                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: GaltDesign.Radius.card, style: .continuous))
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: GaltDesign.Radius.card, style: .continuous)
                         .fill(fill)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: GaltDesign.Radius.card, style: .continuous)
                         .strokeBorder(isHovered && isEnabled ? Color.primary.opacity(0.12) : Color.clear, lineWidth: 1)
                 )
                 .scaleEffect(configuration.isPressed ? 0.985 : 1)
                 .opacity(isEnabled ? 1 : 0.72)
-                .animation(.easeOut(duration: 0.12), value: isHovered)
-                .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+                .animation(GaltDesign.Motion.hover(reduceMotion), value: isHovered)
+                .animation(GaltDesign.Motion.pressed(reduceMotion), value: configuration.isPressed)
                 .onHover { isHovered = $0 }
         }
     }
@@ -473,6 +465,7 @@ private struct OnboardingSecondaryButtonStyle: ButtonStyle {
         let configuration: ButtonStyle.Configuration
 
         @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
         @State private var isHovered = false
 
         private var fill: Color {
@@ -503,8 +496,8 @@ private struct OnboardingSecondaryButtonStyle: ButtonStyle {
                 )
                 .scaleEffect(configuration.isPressed ? 0.96 : 1)
                 .opacity(isEnabled ? 1 : 0.74)
-                .animation(.easeOut(duration: 0.12), value: isHovered)
-                .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+                .animation(GaltDesign.Motion.hover(reduceMotion), value: isHovered)
+                .animation(GaltDesign.Motion.pressed(reduceMotion), value: configuration.isPressed)
                 .onHover { isHovered = $0 }
         }
     }

@@ -3,6 +3,9 @@ import Foundation
 struct HistoryRecord: Codable, Identifiable {
     let date: Date
     let app: String?
+    /// 前台应用 bundle 标识；用于占比统计按应用聚类（名称可能有出入，bundleId 稳定）。
+    /// 可选：老记录无此字段，解码为 nil。
+    var bundleId: String? = nil
     let duration: Double
     let raw: String
     let text: String
@@ -11,7 +14,7 @@ struct HistoryRecord: Codable, Identifiable {
     var id: String { "\(date.timeIntervalSince1970)-\(text.hashValue)" }
 
     private enum CodingKeys: String, CodingKey {
-        case date, app, duration, raw, text
+        case date, app, bundleId, duration, raw, text
     }
 }
 

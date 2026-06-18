@@ -208,6 +208,32 @@ final class SettingsStore {
         set { KeychainStore.set(newValue, account: "stt.volcano.app") }
     }
 
+    // MARK: 火山 ASR 模型（协议 + 资源 + 接口，可由预设带出或自填）
+
+    /// 传输协议（VolcanoASRProtocol.rawValue：flash / streaming）
+    var volcanoProtocol: String {
+        get { defaults.string(forKey: "volcano.protocol") ?? VolcanoASRModel.default.proto.rawValue }
+        set { defaults.set(newValue, forKey: "volcano.protocol") }
+    }
+
+    /// X-Api-Resource-Id
+    var volcanoResourceId: String {
+        get {
+            let s = (defaults.string(forKey: "volcano.resourceId") ?? "").trimmingCharacters(in: .whitespaces)
+            return s.isEmpty ? VolcanoASRModel.default.resourceId : s
+        }
+        set { defaults.set(newValue, forKey: "volcano.resourceId") }
+    }
+
+    /// 接口地址（flash 为 https，streaming 为 wss）
+    var volcanoEndpoint: String {
+        get {
+            let s = (defaults.string(forKey: "volcano.endpoint") ?? "").trimmingCharacters(in: .whitespaces)
+            return s.isEmpty ? VolcanoASRModel.default.endpoint : s
+        }
+        set { defaults.set(newValue, forKey: "volcano.endpoint") }
+    }
+
     /// 指定 LLM 厂商的 Key（钥匙串；Groq 兼容旧版迁移）
     func llmKey(forProvider id: String) -> String {
         if let saved = KeychainStore.get("llm.\(id)"), !saved.isEmpty { return saved }

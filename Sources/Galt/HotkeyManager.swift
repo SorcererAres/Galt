@@ -106,6 +106,15 @@ struct HotkeyCombo: Equatable {
     }
 }
 
+extension HotkeyCombo {
+    /// 「语音输入」当前绑定键的展示文案（如 "fn"、"⌘ 左 + ⇧ 右"）；未绑定时回退为「快捷键」。
+    /// 供空态等提示文案引用，确保与用户在设置里绑定的快捷键一致。
+    static var dictationDisplay: String {
+        let combo = HotkeyCombo(rawValue: SettingsStore.shared.dictationHotkey)
+        return combo.isEmpty ? "快捷键" : combo.accessibilityText
+    }
+}
+
 extension Notification.Name {
     /// 快捷键绑定发生变化（设置面板修改后发出）
     static let galtHotkeysChanged = Notification.Name("galtHotkeysChanged")

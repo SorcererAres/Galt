@@ -3,9 +3,11 @@ import AppKit
 /// 菜单栏常驻入口
 final class StatusBarController: NSObject, NSMenuDelegate {
     private let item: NSStatusItem
+    private let hintItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let statsItem = NSMenuItem(title: "还没有听写记录", action: nil, keyEquivalent: "")
     private let polishItem = NSMenuItem(title: "AI 润色", action: #selector(togglePolish(_:)), keyEquivalent: "")
     private var translationMenu: NSMenu?
+    private var micMenu: NSMenu?
 
     override init() {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -34,9 +36,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
 
-        let hint = NSMenuItem(title: "按住 fn 说话 · 未授权可用 ⌃⌥⌘Space", action: nil, keyEquivalent: "")
-        hint.isEnabled = false
-        menu.addItem(hint)
+        hintItem.title = Self.hintTitle()
+        hintItem.isEnabled = false
+        menu.addItem(hintItem)
         statsItem.isEnabled = false
         menu.addItem(statsItem)
         menu.addItem(.separator())
@@ -60,6 +62,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(translationItem)
         self.translationMenu = translationMenu
 
+        let micItem = NSMenuItem(title: "麦克风", action: nil, keyEquivalent: "")
+        let micMenu = NSMenu()
+        micItem.submenu = micMenu
+        menu.addItem(micItem)
+        self.micMenu = micMenu
+
         let settings = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -73,13 +81,20 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         return menu
     }
 
+    /// 提示行文案：跟随用户绑定的「语音输入」快捷键
+    private static func hintTitle() -> String {
+        "按住 \(HotkeyCombo.dictationDisplay) 说话 · 未授权可用 ⌃⌥⌘Space"
+    }
+
     /// 每次展开菜单时刷新统计与开关状态
     func menuWillOpen(_ menu: NSMenu) {
+        hintItem.title = Self.hintTitle()
         polishItem.state = SettingsStore.shared.polishEnabled ? .on : .off
         let target = SettingsStore.shared.translationTarget
         translationMenu?.items.forEach { item in
             item.state = (item.representedObject as? String == target) ? .on : .off
         }
+        rebuildMicMenu()
         let stats = HistoryStore.shared.stats()
         if stats.count == 0 {
             statsItem.title = "还没有听写记录"
@@ -97,6 +112,33 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func setTranslation(_ sender: NSMenuItem) {
         SettingsStore.shared.translationTarget = (sender.representedObject as? String) ?? "off"
+    }
+
+    /// 重建麦克风子菜单：系统默认 + 当前可用输入设备，勾选当前选择（设备可热插拔，故每次展开重建）
+    private func rebuildMicMenu() {
+        guard let micMenu else { return }
+        micMenu.removeAllItems()
+        let current = SettingsStore.shared.micDeviceUID
+
+        let auto = NSMenuItem(title: "系统默认", action: #selector(setMicDevice(_:)), keyEquivalent: "")
+        auto.target = self
+        auto.representedObject = "auto"
+        auto.state = current == "auto" ? .on : .off
+        micMenu.addItem(auto)
+
+        let devices = AudioDevices.inputDevices()
+        if !devices.isEmpty { micMenu.addItem(.separator()) }
+        for device in devices {
+            let item = NSMenuItem(title: device.name, action: #selector(setMicDevice(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = device.uid
+            item.state = current == device.uid ? .on : .off
+            micMenu.addItem(item)
+        }
+    }
+
+    @objc private func setMicDevice(_ sender: NSMenuItem) {
+        SettingsStore.shared.micDeviceUID = (sender.representedObject as? String) ?? "auto"
     }
 
     @objc private func openConsole() {
