@@ -302,7 +302,7 @@ struct ConsoleView: View {
             ConsoleDesign.panelBackground
             Group {
                 switch navigation.primarySelection {
-                case .overview: OverviewPage()
+                case .overview: OverviewPage(onSeeAll: { withAnimation(pageAnimation) { navigation.showPrimary(.history) } })
                 case .history: HistoryPage()
                 case .dictionary: DictionaryPage()
                 }
@@ -704,40 +704,41 @@ struct ConsoleEmptyState: View {
 // MARK: - 概览页
 
 struct OverviewPage: View {
+    var onSeeAll: () -> Void = {}
     @AppStorage("polishEnabled") private var polishEnabled = true
     @State private var records: [HistoryRecord] = []
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Galt")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Palette.textPrimary)
-                    .frame(height: 28, alignment: .leading)
+        // 整页填满窗口：顶部仪表盘固定，「最近的转录内容」卡片吸收剩余高度并内部滚动，
+        // 不再嵌套整页滚动条（避免双滚动条）。
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Galt")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Palette.textPrimary)
+                .frame(height: 28, alignment: .leading)
 
-                Text("Speak. The mind does the rest.")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(Palette.textSecondary)
-                    .frame(height: 24, alignment: .leading)
-                    .padding(.top, 4)
+            Text("Speak. The mind does the rest.")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(Palette.textSecondary)
+                .frame(height: 24, alignment: .leading)
+                .padding(.top, 4)
 
-                metricsGrid
-                    .padding(.top, 20)
+            metricsGrid
+                .padding(.top, 20)
 
-                HStack(spacing: 16) {
-                    chartSection
-                    personalizationSection
-                }
-                .padding(.top, 16)
-
-                recentSection
-                    .padding(.top, 15)
+            HStack(spacing: 16) {
+                chartSection
+                personalizationSection
             }
-            .frame(maxWidth: ConsoleDesign.homeContentWidth, alignment: .leading)
-            .padding(.top, 24)
-            .padding(.bottom, 24)
-            .frame(maxWidth: .infinity, alignment: .top)
+            .padding(.top, 16)
+
+            recentSection
+                .padding(.top, 15)
+                .frame(maxHeight: .infinity)
         }
+        .frame(maxWidth: ConsoleDesign.homeContentWidth, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.vertical, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(ConsoleStyle.panelBackground)
         .onAppear(perform: reload)
         .onReceive(NotificationCenter.default.publisher(for: .galtHistoryChanged)) { _ in reload() }
@@ -1036,16 +1037,30 @@ struct OverviewPage: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(ConsoleDesign.cardBackground)
         )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     // MARK: 最近听写
 
+    /// 最多展示的转录条数（列表可上下滚动）
+    private static let recentLimit = 25
+
     private var recentSection: some View {
-        dashboardCard(width: ConsoleDesign.homeContentWidth, height: 358) {
-            Text("最近的转录内容")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Palette.textPrimary)
-                .frame(height: 22, alignment: .leading)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 0) {
+                Text("最近的转录内容")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Palette.textPrimary)
+                Spacer(minLength: 0)
+                Button(action: onSeeAll) {
+                    Text("查看全部")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
+                }
+                .buttonStyle(LinkButtonStyle())
+                .accessibilityLabel("查看全部转录记录")
+            }
+            .frame(height: 22)
 
             if records.isEmpty {
                 VStack(spacing: 8) {
@@ -1060,17 +1075,120 @@ struct OverviewPage: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(records.prefix(4).enumerated()), id: \.element.id) { index, record in
-                        HistoryRow(record: record)
-                        if index < min(records.count, 4) - 1 {
-                            Divider().padding(.leading, 12)
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 12) {
+                        ForEach(Array(records.prefix(Self.recentLimit)), id: \.id) { record in
+                            RecentTranscriptRow(record: record)
                         }
                     }
+                    .padding(.top, 12)
+                    .padding(.bottom, 2) // 末行描边不被裁切
                 }
-                .padding(.top, 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 160, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(ConsoleDesign.cardBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+/// 概览页「最近的转录内容」单行（对照 Figma node 652:2223）：
+/// 时间戳 + 单行文本 + 应用彩色标签；悬停高亮描边并浮出复制按钮。
+struct RecentTranscriptRow: View {
+    let record: HistoryRecord
+    @State private var hovering = false
+    @State private var copied = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// 12 小时制 “07:07 AM”（对照设计稿）
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "hh:mm a"
+        return f
+    }()
+
+    /// 应用名 → 彩色标签（与历史页同一套哈希映射，保证同一应用同色）
+    private var tag: (bg: Color, fg: Color) {
+        let tags: [(Color, Color)] = [
+            (Palette.tagBlueBg, Palette.tagBlueFg),
+            (Palette.tagTealBg, Palette.tagTealFg),
+            (Palette.tagVioletBg, Palette.tagVioletFg),
+            (Palette.tagAmberBg, Palette.tagAmberFg),
+            (Palette.tagRoseBg, Palette.tagRoseFg),
+            (Palette.tagGreenBg, Palette.tagGreenFg),
+        ]
+        var hash = 0
+        for scalar in (record.app ?? "").unicodeScalars { hash = (hash &* 31 &+ Int(scalar.value)) & 0xFFFF }
+        return tags[hash % tags.count]
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(Self.timeFormatter.string(from: record.date))
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(Palette.textSecondary)
+                .monospacedDigit()
+                .frame(width: 63, alignment: .leading)
+                .padding(.top, 15)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(record.text)
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    Circle().fill(tag.fg).frame(width: 4, height: 4)
+                    Text(record.app ?? "未知应用")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(tag.fg)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(tag.bg))
+            }
+            .padding(.top, 12)
+
+            Spacer(minLength: 56)
+        }
+        .padding(.horizontal, 15)
+        .frame(height: 72, alignment: .top)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(hovering ? Palette.stateHover : Color.clear))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(hovering ? Palette.borderHover : Palette.borderSubtle, lineWidth: 1))
+        .overlay(alignment: .topTrailing) {
+            Button(action: copy) {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(copied ? Palette.success : Palette.textSecondary)
+            }
+            .buttonStyle(IconButtonStyle())
+            .padding(.top, 11)
+            .padding(.trailing, 11)
+            .opacity(hovering ? 1 : 0)
+            .allowsHitTesting(hovering)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onHover { hovering = $0 }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
+        .contextMenu {
+            Button("复制文本") { copy() }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func copy() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(record.text, forType: .string)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
     }
 }
 
