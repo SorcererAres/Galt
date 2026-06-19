@@ -707,11 +707,8 @@ struct SettingsView: View {
                     DropdownPicker(selection: $sttProviderId,
                         options: STTProviderInfo.all.map { DropdownOption(value: $0.id, title: $0.name) })
                 }
-                settingsRow(title: "本地引擎", subtitle: "选择本地离线识别方式，Whisper 模型在「模型库」下载。") {
-                    DropdownPicker(selection: $localEngine, options: [
-                        DropdownOption(value: "apple", title: "Apple 设备端听写"),
-                        DropdownOption(value: "whispercpp", title: "Whisper 离线模型"),
-                    ])
+                settingsRow(title: "本地模型", subtitle: "仅列出已下载的模型；更多模型在「模型库」下载。") {
+                    DropdownPicker(selection: activeLocalSelection, options: localEngineOptions)
                 }
             }
 
@@ -785,10 +782,10 @@ struct SettingsView: View {
                     .frame(height: 28)
                     .background(RoundedRectangle(cornerRadius: GaltDesign.Radius.control, style: .continuous).strokeBorder(Palette.borderDefault, lineWidth: 1))
             }
-            ForEach(WhisperModel.all) { model in
+            ForEach(LocalModel.all) { model in
                 modelCard(
                     title: model.name,
-                    subtitle: model.isDownloaded ? "已下载到本机，可离线使用。" : whisperSubtitle(model)
+                    subtitle: whisperSubtitle(model)
                 ) {
                     whisperModelControl(model)
                 }
@@ -802,8 +799,43 @@ struct SettingsView: View {
         }
     }
 
-    private func whisperSubtitle(_ model: WhisperModel) -> String {
-        (model.id.contains("large") ? "高精度，约" : "多语言，约") + "\(model.sizeMB)MB"
+    private func whisperSubtitle(_ model: LocalModel) -> String {
+        model.note + (model.isDownloaded ? "（已下载，可离线使用）" : "（下载约 \(model.sizeMB)MB）")
+    }
+
+    /// 本地引擎下拉选项：Apple + 已下载的本地模型（名字与模型库一致）。
+    /// 未下载的模型不出现；sherpa 模型仅在 GALT_SHERPA 下进入目录，故无需额外门控。
+    private var localEngineOptions: [DropdownOption] {
+        _ = modelStateTick // 下载/删除后随 tick 重算
+        var opts = [DropdownOption(value: "apple", title: "Apple 设备端听写")]
+        opts += LocalModel.all
+            .filter { $0.isDownloaded }
+            .map { DropdownOption(value: $0.id, title: $0.name) }
+        return opts
+    }
+
+    /// 本地引擎/模型的统一选择：值为 "apple" 或某个已下载模型的 id。
+    /// 读：apple→"apple"，否则当前模型 id（若已被删除则回退 "apple"）。
+    /// 写：选模型即定运行时（sherpa 模型→sherpa，其余→whispercpp）。
+    private var activeLocalSelection: Binding<String> {
+        let engine = $localEngine
+        let modelId = $whisperModelId
+        return Binding(
+            get: {
+                guard engine.wrappedValue != "apple" else { return "apple" }
+                let m = LocalModel.byId(modelId.wrappedValue)
+                return m.isDownloaded ? m.id : "apple"
+            },
+            set: { newValue in
+                if newValue == "apple" {
+                    engine.wrappedValue = "apple"
+                } else {
+                    let m = LocalModel.byId(newValue)
+                    modelId.wrappedValue = m.id
+                    engine.wrappedValue = m.runtime == .sherpaOnnx ? "sherpa" : "whispercpp"
+                }
+            }
+        )
     }
 
     private func modelCard<Trailing: View>(title: String, subtitle: String, @ViewBuilder trailing: () -> Trailing) -> some View {
@@ -827,7 +859,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func whisperModelControl(_ model: WhisperModel) -> some View {
+    private func whisperModelControl(_ model: LocalModel) -> some View {
         if downloader.downloadingId == model.id {
             HStack(spacing: GaltDesign.Spacing.sm) {
                 ProgressView(value: downloader.progress).frame(width: 120)
@@ -835,13 +867,11 @@ struct SettingsView: View {
             }
         } else if model.isDownloaded {
             HStack(spacing: GaltDesign.Spacing.md) {
-                if whisperModelId != model.id {
-                    Button("设为默认") { whisperModelId = model.id }
-                        .buttonStyle(LinkButtonStyle())
-                        .font(.system(size: 12))
-                        .foregroundStyle(Palette.primary)
-                }
                 Button {
+                    // 删除当前正在使用的模型时，本地引擎回退到 Apple，避免引擎指向已不存在的模型
+                    if whisperModelId == model.id && localEngine != "apple" {
+                        localEngine = "apple"
+                    }
                     try? model.delete()
                     modelStateTick += 1
                 } label: {
@@ -1624,17 +1654,11 @@ struct SettingsView: View {
                 .onChange(of: sttKey) { newValue in
                     SettingsStore.shared.setSTTKey(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forProvider: sttProviderId)
                 }
-            Picker("本地引擎", selection: $localEngine) {
+            Picker("本地模型", selection: activeLocalSelection) {
                 Text("Apple 设备端听写（零下载）").tag("apple")
-                Text("Whisper 离线模型（更准，自动检测语言）").tag("whispercpp")
-            }
-            if localEngine == "whispercpp" {
-                Picker("模型", selection: $whisperModelId) {
-                    ForEach(WhisperModel.all) { model in
-                        Text(model.name).tag(model.id)
-                    }
+                ForEach(LocalModel.all.filter { $0.isDownloaded }) { model in
+                    Text(model.name).tag(model.id)
                 }
-                whisperModelStatus
             }
         } header: {
             Label("转写引擎", systemImage: "waveform")
@@ -1669,29 +1693,6 @@ struct SettingsView: View {
             Text("\(LLMProviderInfo.byId(llmProviderId).keyHint)。润色、翻译、语音编辑与随便问均使用此模型，可与转写厂商不同。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        }
-    }
-
-    @ViewBuilder
-    private var whisperModelStatus: some View {
-        let model = WhisperModel.byId(whisperModelId)
-        if model.isDownloaded {
-            Label("模型已就绪", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(Palette.success)
-        } else if downloader.downloadingId == model.id {
-            HStack {
-                ProgressView(value: downloader.progress)
-                Text("\(Int(downloader.progress * 100))%")
-                    .font(.caption)
-                    .monospacedDigit()
-            }
-        } else {
-            Button("下载模型（约 \(model.sizeMB)MB）") {
-                downloader.download(model)
-            }
-            if let error = downloader.errorMessage {
-                Text(error).font(.caption).foregroundStyle(Palette.danger)
-            }
         }
     }
 

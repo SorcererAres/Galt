@@ -43,7 +43,7 @@ enum VolcanoStreamingASR {
 
         // ② 逐包发送音频（PCM，去掉 WAV 头）
         let pcm = pcmPayload(fromWAV: wav)
-        let chunkSize = 32_000 // 约 1s @16k/16bit/mono
+        let chunkSize = 6_400 // 200ms @16k/16bit/mono：官方建议单包 100~200ms（200ms 性能最优）
         var seq: Int32 = 1
         var offset = 0
         if pcm.isEmpty {

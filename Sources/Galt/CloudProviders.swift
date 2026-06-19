@@ -43,12 +43,14 @@ struct STTProviderInfo: Identifiable {
 enum VolcanoASRProtocol: String, CaseIterable, Identifiable {
     case flash      // HTTP 一次性(录音文件极速版)
     case streaming  // WebSocket 流式(流式语音识别大模型)
+    case fileAsync  // HTTP 异步(录音文件标准版:submit 提交 + query 轮询)
 
     var id: String { rawValue }
     var displayName: String {
         switch self {
         case .flash: return "一次性 (HTTP)"
         case .streaming: return "流式 (WebSocket)"
+        case .fileAsync: return "异步文件 (HTTP 提交+轮询)"
         }
     }
 }
@@ -64,6 +66,9 @@ struct VolcanoASRModel: Identifiable {
     static let presets: [VolcanoASRModel] = [
         .init(id: "auc_turbo", name: "录音文件极速版", resourceId: "volc.bigasr.auc_turbo",
               endpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash", proto: .flash),
+        // 标准版异步：endpoint 为基址，代码自动拼 /submit 与 /query
+        .init(id: "auc", name: "录音文件标准版", resourceId: "volc.bigasr.auc",
+              endpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel", proto: .fileAsync),
         .init(id: "sauc_duration", name: "流式·小时版", resourceId: "volc.bigasr.sauc.duration",
               endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel", proto: .streaming),
         .init(id: "sauc_concurrent", name: "流式·并发版", resourceId: "volc.bigasr.sauc.concurrent",
@@ -293,6 +298,11 @@ struct CloudSTTProvider: STTProvider {
                 wav: wav, endpoint: endpoint, resourceId: resourceId,
                 appKey: appKey, accessKey: accessKey, timeout: timeout
             )
+        case .fileAsync:
+            return try await transcribeVolcanoFileAsync(
+                wav: wav, baseEndpoint: endpoint, resourceId: resourceId,
+                appKey: appKey, accessKey: accessKey, timeout: timeout
+            )
         }
     }
 
@@ -330,5 +340,71 @@ struct CloudSTTProvider: STTProvider {
             let result: Result?
         }
         return (try? JSONDecoder().decode(VolcResponse.self, from: data))?.result?.text ?? ""
+    }
+
+    /// 录音文件识别·标准版（异步 auc）：submit 提交任务 → query 轮询直至完成。
+    /// baseEndpoint 为基址（如 …/api/v3/auc/bigmodel），自动拼 /submit 与 /query。
+    /// 状态码：20000000 完成；20000001 排队；20000002 处理中；其它为失败。
+    private func transcribeVolcanoFileAsync(wav: Data, baseEndpoint: String, resourceId: String,
+                                           appKey: String, accessKey: String, timeout: TimeInterval) async throws -> String {
+        let base = baseEndpoint.hasSuffix("/") ? String(baseEndpoint.dropLast()) : baseEndpoint
+        guard let submitURL = URL(string: base + "/submit"),
+              let queryURL = URL(string: base + "/query") else {
+            throw STTError.http(-1, "火山接口地址无效")
+        }
+        // 同一个 Request-Id 贯穿 submit 与 query，作为任务句柄
+        let requestId = UUID().uuidString
+
+        func makeRequest(_ url: URL, body: [String: Any]) throws -> URLRequest {
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.timeoutInterval = timeout
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue(appKey, forHTTPHeaderField: "X-Api-App-Key")
+            req.setValue(accessKey, forHTTPHeaderField: "X-Api-Access-Key")
+            req.setValue(resourceId, forHTTPHeaderField: "X-Api-Resource-Id")
+            req.setValue(requestId, forHTTPHeaderField: "X-Api-Request-Id")
+            req.setValue("-1", forHTTPHeaderField: "X-Api-Sequence")
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            return req
+        }
+
+        // 1) 提交任务
+        let submitBody: [String: Any] = [
+            "user": ["uid": "galt"],
+            "audio": ["format": "wav", "data": wav.base64EncodedString()],
+            "request": ["model_name": "bigmodel", "enable_itn": true, "enable_punc": true],
+        ]
+        let (sData, sResp) = try await URLSession.shared.data(for: try makeRequest(submitURL, body: submitBody))
+        let sHTTP = sResp as? HTTPURLResponse
+        let sCode = sHTTP?.value(forHTTPHeaderField: "X-Api-Status-Code") ?? ""
+        guard sCode == "20000000" else {
+            let msg = sHTTP?.value(forHTTPHeaderField: "X-Api-Message") ?? String(data: sData, encoding: .utf8) ?? ""
+            throw STTError.http(sHTTP?.statusCode ?? -1, "火山提交失败 \(sCode)：\(msg)")
+        }
+
+        // 2) 轮询查询（请求体为空 {}），直到完成或超时
+        struct VolcResponse: Decodable {
+            struct Result: Decodable { let text: String? }
+            let result: Result?
+        }
+        let interval: UInt64 = 1_500_000_000 // 1.5s
+        let deadline = Date().addingTimeInterval(max(timeout, 180)) // 长音频留足时间
+        while Date() < deadline {
+            let (qData, qResp) = try await URLSession.shared.data(for: try makeRequest(queryURL, body: [:]))
+            let qHTTP = qResp as? HTTPURLResponse
+            let qCode = qHTTP?.value(forHTTPHeaderField: "X-Api-Status-Code") ?? ""
+            switch qCode {
+            case "20000000":
+                let text = (try? JSONDecoder().decode(VolcResponse.self, from: qData))?.result?.text ?? ""
+                return text
+            case "20000001", "20000002": // 排队 / 处理中
+                try await Task.sleep(nanoseconds: interval)
+            default:
+                let msg = qHTTP?.value(forHTTPHeaderField: "X-Api-Message") ?? String(data: qData, encoding: .utf8) ?? ""
+                throw STTError.http(qHTTP?.statusCode ?? -1, "火山查询失败 \(qCode)：\(msg)")
+            }
+        }
+        throw STTError.http(-1, "火山识别超时：任务长时间未完成")
     }
 }

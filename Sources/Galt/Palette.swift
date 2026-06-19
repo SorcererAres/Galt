@@ -91,6 +91,12 @@ enum Palette {
     static let softSkyFg = dyn(0x1E6FD0, 0x80B6F2)
     static let softRoseFg = dyn(0xC23B58, 0xE68BA0)
 
+    // MARK: 图表专用 · 轻柔版（比 soft 系更饱和，细线条/环形图也能立住）
+    static let chartTeal = dyn(0x8CD9CF, 0x57C9BA)
+    static let chartAmber = dyn(0xF3B968, 0xE0A24E)
+    static let chartSky = dyn(0x7BABEA, 0x6398DD)
+    static let chartRose = dyn(0xEC899C, 0xD97488)
+
     // MARK: 分类标签
     static let tagBlueBg = dyn(0xDCEBFC, 0x16263D)
     static let tagBlueFg = dyn(0x1E6FD0, 0x7FB4F0)

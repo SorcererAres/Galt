@@ -8,6 +8,7 @@ final class DictationController {
     private let cloud = CloudSTTProvider()
     private let appleLocal = AppleSpeechProvider()
     private let whisperLocal = WhisperCppProvider()
+    private let sherpaLocal = SherpaOnnxProvider()
     private let polisher = Polisher()
     private var sessionTimer: Timer?
     private var keyDownAt: Date?
@@ -24,7 +25,11 @@ final class DictationController {
 
     /// 当前生效的本地引擎
     private var local: STTProvider {
-        SettingsStore.shared.localEngine == "whispercpp" ? whisperLocal : appleLocal
+        switch SettingsStore.shared.localEngine {
+        case "whispercpp": return whisperLocal
+        case "sherpa": return sherpaLocal
+        default: return appleLocal
+        }
     }
 
     init() {

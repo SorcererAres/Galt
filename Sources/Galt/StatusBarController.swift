@@ -76,6 +76,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         history.target = self
         menu.addItem(history)
 
+        let reonboard = NSMenuItem(title: "重新运行引导…", action: #selector(rerunOnboarding), keyEquivalent: "")
+        reonboard.target = self
+        menu.addItem(reonboard)
+
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出 Galt", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         return menu
@@ -147,6 +151,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func openSettings() {
         SettingsRouter.show()
+    }
+
+    /// 重新运行引导：重置完成标记并打开引导窗口（Release 下的重跑入口）
+    @objc private func rerunOnboarding() {
+        SettingsStore.shared.resetOnboarding()
+        OnboardingWindowController.shared.show()
     }
 
     @objc private func openHistory() {

@@ -989,7 +989,7 @@ struct OverviewPage: View {
         let sorted = clusters.values
             .map { (name: $0.names.max { $0.value < $1.value }?.key ?? "未知应用", count: $0.count) }
             .sorted { $0.count > $1.count }
-        let colors = [Palette.softTeal, Palette.softAmber, Palette.softSky, Palette.softRose]
+        let colors = [Palette.chartTeal, Palette.chartAmber, Palette.chartSky, Palette.chartRose]
 
         // 应用数 ≤ 配色槽位：全部按真名展示；否则前 3 名 + 其余聚合为「其他」
         if sorted.count <= colors.count {
@@ -1072,28 +1072,43 @@ struct OverviewPage: View {
             .background(RoundedRectangle(cornerRadius: GaltDesign.Radius.control, style: .continuous).fill(bg))
     }
 
+    @ViewBuilder
     private var productivityBars: some View {
-        let maxV = max(maxDailySeconds, 1)
-        return VStack(spacing: GaltDesign.Spacing.sm) {
-            HStack(alignment: .bottom, spacing: GaltDesign.Spacing.lg) {
-                ForEach(Array(dailyTime.enumerated()), id: \.element.id) { index, d in
-                    barColumn(d, index: index, maxV: maxV)
+        if weekSeconds(weeksAgo: 0) <= 0 {
+            emptyWeekState
+        } else {
+            let maxV = max(maxDailySeconds, 1)
+            VStack(spacing: GaltDesign.Spacing.sm) {
+                HStack(alignment: .bottom, spacing: GaltDesign.Spacing.lg) {
+                    ForEach(Array(dailyTime.enumerated()), id: \.element.id) { index, d in
+                        barColumn(d, index: index, maxV: maxV)
+                    }
+                }
+                .frame(height: 101, alignment: .bottom)
+                HStack(spacing: GaltDesign.Spacing.lg) {
+                    ForEach(dailyTime) { d in
+                        Text(weekdayLabel(d.day))
+                            .font(.system(size: 12, weight: hoveredDay == d.day ? .semibold : .regular))
+                            .foregroundStyle(hoveredDay == d.day ? Palette.textPrimary : Palette.textSecondary)
+                            .frame(width: 24)
+                            .animation(GaltDesign.Motion.highlight(reduceMotion), value: hoveredDay)
+                    }
                 }
             }
-            .frame(height: 101, alignment: .bottom)
-            HStack(spacing: GaltDesign.Spacing.lg) {
-                ForEach(dailyTime) { d in
-                    Text(weekdayLabel(d.day))
-                        .font(.system(size: 12, weight: hoveredDay == d.day ? .semibold : .regular))
-                        .foregroundStyle(hoveredDay == d.day ? Palette.textPrimary : Palette.textSecondary)
-                        .frame(width: 24)
-                        .animation(GaltDesign.Motion.highlight(reduceMotion), value: hoveredDay)
-                }
-            }
+            .padding(.top, 25)
+            .padding(.trailing, GaltDesign.Spacing.md)
+            .onAppear { barsAppeared = true }
         }
-        .padding(.top, 25)
-        .padding(.trailing, GaltDesign.Spacing.md)
-        .onAppear { barsAppeared = true }
+    }
+
+    /// 本周完全无记录：右侧柱区显示一句引导，替代 7 根零值灰柱
+    private var emptyWeekState: some View {
+        Text("本周还没有听写记录")
+            .font(.system(size: 13, weight: .regular))
+            .foregroundStyle(Palette.textSecondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity, minHeight: 150, alignment: .center)
+            .padding(.trailing, GaltDesign.Spacing.md)
     }
 
     /// 单日柱列：透明命中区撑满整列便于悬停；柱体入场生长 + 悬停高亮 + 顶部数值气泡
@@ -2224,16 +2239,29 @@ struct DictionaryPage: View {
 
     private var emptyDictionaryState: some View {
         VStack(spacing: GaltDesign.Spacing.sm) {
-            Text("还没有词汇")
+            Text(emptyDictTitle)
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(titleColor)
-            Text("Galt 会记住您独特的名称和术语，通过您的编辑自动学习，或由您手动添加。")
+            Text(emptyDictMessage)
                 .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(mutedColor)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// 空态标题：搜索无结果 / 自动学习标签 / 完全为空 三种语义分开
+    private var emptyDictTitle: String {
+        if !searchQuery.isEmpty { return "没有匹配的词汇" }
+        if filter == .automatic { return "还没有自动学习的词汇" }
+        return "还没有词汇"
+    }
+
+    private var emptyDictMessage: String {
+        if !searchQuery.isEmpty { return "换个关键词再试试。" }
+        if filter == .automatic { return "Galt 会从您的编辑中自动学习独特的名称和术语，学到的词会出现在这里。" }
+        return "Galt 会记住您独特的名称和术语，通过您的编辑自动学习，或由您手动添加。"
     }
 
     private var dictionaryGrid: some View {

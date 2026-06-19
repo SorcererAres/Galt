@@ -13,10 +13,9 @@ final class WhisperCppProvider: STTProvider {
     }
 
     func transcribe(wav: Data) async throws -> String {
-        let model = WhisperModel.byId(SettingsStore.shared.whisperModelId)
-        guard model.isDownloaded else { throw STTError.modelMissing }
+        let model = LocalModel.byId(SettingsStore.shared.whisperModelId)
+        guard model.isDownloaded, let path = model.primaryPath else { throw STTError.modelMissing }
 
-        let path = model.localURL.path
         if ctx == nil || loadedModelPath != path {
             if let old = ctx { whisper_free(old) }
             var cparams = whisper_context_default_params()

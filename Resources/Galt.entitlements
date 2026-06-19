@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened Runtime 下访问麦克风必需（非沙盒 app；语音识别/辅助功能仍走 TCC，无需额外授权项） -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>
