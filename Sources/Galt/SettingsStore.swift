@@ -37,6 +37,12 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: "polishEnabled") }
     }
 
+    /// 全局暂停听写：开启时热键被忽略（用于全屏/游戏/会议避免误触），默认关闭
+    var dictationPaused: Bool {
+        get { defaults.bool(forKey: "dictationPaused") }
+        set { defaults.set(newValue, forKey: "dictationPaused") }
+    }
+
     /// 转写引擎模式："auto"（云端优先，离线兜底）| "cloud" | "local"
     var engineMode: String {
         get { defaults.string(forKey: "engineMode") ?? "auto" }
@@ -70,6 +76,37 @@ final class SettingsStore {
             .filter { !$0.isEmpty }
     }
 
+    /// 是否开启「纠错自学习」：出字后观察用户的就地修改，把高频纠正沉淀进自动词典
+    var correctionLearningEnabled: Bool {
+        get { defaults.object(forKey: "correctionLearningEnabled") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "correctionLearningEnabled") }
+    }
+
+    /// 自动学习的词（区别于用户手填的 dictionaryTerms）；最多保留 50 个，新词在前
+    var learnedTerms: [String] {
+        get { (defaults.array(forKey: "learnedTerms") as? [String]) ?? [] }
+        set { defaults.set(Array(newValue.prefix(50)), forKey: "learnedTerms") }
+    }
+
+    /// 把一个新学习到的词并入自动词典（去重、置顶、限长）；返回 true 表示确为新增
+    @discardableResult
+    func learnTerm(_ term: String) -> Bool {
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else { return false }
+        var terms = learnedTerms
+        // 已在手填词典或已学习过则不重复记
+        if dictionaryTerms.contains(trimmed) || terms.contains(trimmed) { return false }
+        terms.insert(trimmed, at: 0)
+        learnedTerms = terms
+        return true
+    }
+
+    /// 实际喂给 STT 提示与 LLM 润色的词典 = 手填词典 + 自动学习词（去重）
+    var effectiveDictionaryTerms: [String] {
+        var seen = Set<String>()
+        return (dictionaryTerms + learnedTerms).filter { seen.insert($0).inserted }
+    }
+
     /// 翻译模式目标语言："off" 关闭，或 "zh-Hans" / "en" / "ja"
     var translationTarget: String {
         get { defaults.string(forKey: "translationTarget") ?? "off" }
@@ -100,6 +137,7 @@ final class SettingsStore {
     func resetOnboarding() {
         defaults.removeObject(forKey: "hasCompletedOnboarding")
         defaults.removeObject(forKey: "onboardingVersion")
+        defaults.removeObject(forKey: "dictationHintShownCount")
     }
 
     /// 转写模型与润色模型
@@ -108,6 +146,18 @@ final class SettingsStore {
 
     /// 单次听写时长上限（秒），对齐 Typeless 的 6 分钟
     let maxSessionSeconds: TimeInterval = 360
+
+    /// 临近时长上限时，剩余多少秒开始在录音胶囊上显示倒计时
+    let countdownWarnSeconds: TimeInterval = 60
+
+    /// 录音胶囊的新手教学提示最多展示次数（之后不再打扰）
+    let dictationHintMaxShows = 3
+
+    /// 已展示新手教学提示的次数（持久化，达到上限后不再显示）
+    var dictationHintShownCount: Int {
+        get { defaults.integer(forKey: "dictationHintShownCount") }
+        set { defaults.set(newValue, forKey: "dictationHintShownCount") }
+    }
 
     /// 外观："system" 跟随系统 | "light" | "dark"
     var appearance: String {
@@ -119,6 +169,20 @@ final class SettingsStore {
     var historyRetentionDays: Int {
         get { defaults.integer(forKey: "historyRetentionDays") }
         set { defaults.set(newValue, forKey: "historyRetentionDays") }
+    }
+
+    /// 是否随历史一并保存音频（默认关闭：涉及隐私与磁盘占用）；
+    /// 开启后音频落盘到 Application Support/Galt/recordings，随历史超期一并清理。
+    var storeAudioInHistory: Bool {
+        get { defaults.object(forKey: "storeAudioInHistory") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "storeAudioInHistory") }
+    }
+
+    /// 火山「录音文件」上传是否用 Opus 压缩（默认开，编码失败自动回退 WAV）。
+    /// 若你的火山账号/接口拒收 ogg_opus，可在此关闭作为兜底。
+    var compressVolcanoUpload: Bool {
+        get { defaults.object(forKey: "compressVolcanoUpload") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "compressVolcanoUpload") }
     }
 
     /// 厂商自定义接口地址（模型库填写，空则用厂商默认 base）
@@ -232,6 +296,17 @@ final class SettingsStore {
             return s.isEmpty ? VolcanoASRModel.default.endpoint : s
         }
         set { defaults.set(newValue, forKey: "volcano.endpoint") }
+    }
+
+    // MARK: 百炼 ASR 模型（DashScopeASRModel.presets：一次性 qwen3-asr-flash / 实时 paraformer）
+
+    /// 当前选用的百炼 ASR 模型 id；决定走一次性多模态还是实时流式链路。
+    var dashscopeModel: String {
+        get {
+            let s = (defaults.string(forKey: "dashscope.model") ?? "").trimmingCharacters(in: .whitespaces)
+            return s.isEmpty ? DashScopeASRModel.default.id : s
+        }
+        set { defaults.set(newValue, forKey: "dashscope.model") }
     }
 
     /// 指定 LLM 厂商的 Key（钥匙串；Groq 兼容旧版迁移）

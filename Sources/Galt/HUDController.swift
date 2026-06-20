@@ -10,6 +10,8 @@ enum ProcessingStage: Equatable {
 
 enum HUDPhase: Equatable {
     case idle
+    /// 麦克风唤醒中：按下到引擎真正开始采集之间的过渡态（仅在启动较慢时经防抖后呈现）
+    case starting(mode: DictationMode)
     case recording(locked: Bool, editing: Bool, mode: DictationMode)
     case processing(ProcessingStage)
     case success(String)
@@ -18,6 +20,8 @@ enum HUDPhase: Equatable {
     case failure(String)
     /// 录音过短或未捕获到语音——非错误，仅做一次轻量提示后淡出
     case empty
+    /// 中性轻量提示（如「已学习某词」），无按钮，短暂展示后淡出
+    case info(String)
 }
 
 final class HUDState: ObservableObject {
@@ -33,6 +37,12 @@ final class HUDState: ObservableObject {
     }
     @Published var level: Float = 0
 
+    /// 录音剩余秒数；临近时长上限时由 RecordingPill 呈现 mm:ss 倒计时，nil 表示不显示
+    @Published var remainingSeconds: Int?
+
+    /// 新手教学提示（如「按住说话…」）；非 nil 时在录音胶囊下方短暂呈现，nil 表示不显示
+    @Published var recordingHint: String?
+
     /// 阶段变化回调（HUDController 用来按需开启鼠标交互；避免引入 Combine）
     var onPhaseChange: ((HUDPhase) -> Void)?
 
@@ -40,6 +50,7 @@ final class HUDState: ObservableObject {
     static func announcement(for phase: HUDPhase) -> String? {
         switch phase {
         case .idle: return nil
+        case .starting: return "正在唤醒麦克风"
         case .recording: return "开始听写"
         case .processing(.transcribing): return "正在转写"
         case .processing(.polishing): return "正在润色"
@@ -47,6 +58,7 @@ final class HUDState: ObservableObject {
         case .error(let text): return text
         case .failure(let text): return "\(text)。可点击重试"
         case .empty: return "未捕获到语音"
+        case .info(let text): return text
         }
     }
 
@@ -86,6 +98,8 @@ final class HUDController {
     var onDismissRequested: (() -> Void)?
     /// 用户点击成功态「撤销」按钮：删除刚插入的文本（语音编辑则恢复原文）
     var onUndoRequested: (() -> Void)?
+    /// 相位变化对外通知（DictationController 据此按需挂载/卸载 ESC 监听）
+    var onPhaseChanged: ((HUDPhase) -> Void)?
 
     private var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -95,6 +109,7 @@ final class HUDController {
         state.onPhaseChange = { [weak self] phase in
             guard let self else { return }
             self.updateInteractivity(for: phase)
+            self.onPhaseChanged?(phase)
             // phase 变化即按新内容贴合面板。fittingSize 在切换后同步即为正确最终值（已无尺寸动画），
             // 同步先量一次让改窗与内容切换同帧；异步再校正一次兜底。
             self.resizeToContent()
@@ -277,12 +292,31 @@ struct HUDView: View {
         //   2) 不用 GeometryReader 上报尺寸——success/error 带 frame(maxWidth:400) 是横向弹性的，
         //      GeometryReader 上报值取决于被提议的窗口宽度，会和「按上报值改窗」构成反馈环、卡在错误尺寸。
         // fittingSize 不依赖被提议宽度，量值稳定且正确。胶囊内部动画（红点、声波）各自独立不受影响。
-        phaseView
-            .fixedSize(horizontal: false, vertical: true)
-            // 居中兜底：万一面板尺寸比内容大（尺寸更新滞后一帧、或 ceil 取整留缝），让胶囊在面板内
-            // 居中而非左上对齐——否则无 maxWidth 的窄状态（processing/empty）会明显偏左。
-            // fittingSize 对 maxWidth:.infinity 取的是内容固有尺寸，测量不受影响（已实测验证）。
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // 胶囊 + 其下方的新手教学提示纵向堆叠；hint 仅在录音/唤醒态出现，淡入且不挤占胶囊本身。
+        VStack(spacing: 6) {
+            phaseView
+            if let hint = state.recordingHint, isRecordingLike {
+                Text(hint)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .environment(\.colorScheme, .dark)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: state.recordingHint)
+        .fixedSize(horizontal: false, vertical: true)
+        // 居中兜底：万一面板尺寸比内容大（尺寸更新滞后一帧、或 ceil 取整留缝），让胶囊在面板内
+        // 居中而非左上对齐——否则无 maxWidth 的窄状态（processing/empty）会明显偏左。
+        // fittingSize 对 maxWidth:.infinity 取的是内容固有尺寸，测量不受影响（已实测验证）。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 录音 / 唤醒态——这两态下方才挂教学提示
+    private var isRecordingLike: Bool {
+        switch state.phase {
+        case .starting, .recording: return true
+        default: return false
+        }
     }
 
     /// 录音态使用独立的深色胶囊（对齐 Figma），其余态沿用系统材质胶囊
@@ -291,12 +325,15 @@ struct HUDView: View {
         switch state.phase {
         case .idle:
             EmptyView()
+        case .starting(let mode):
+            StartingPill(mode: mode)
         case .recording(let locked, let editing, let mode):
             RecordingPill(
                 level: state.level,
                 locked: locked,
                 editing: editing,
                 mode: mode,
+                remainingSeconds: state.remainingSeconds,
                 onStop: onStop,
                 onCancel: onCancel
             )
@@ -343,6 +380,12 @@ struct HUDView: View {
                     .foregroundStyle(.secondary)
                 Text("未捕获到语音").foregroundStyle(.secondary)
             }
+        case .info(let message):
+            HStack(spacing: GaltDesign.Spacing.sm) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Palette.success)
+                Text(message).lineLimit(2).frame(maxWidth: 400)
+            }
         default:
             EmptyView()
         }
@@ -355,6 +398,8 @@ private struct RecordingPill: View {
     var locked: Bool
     var editing: Bool
     var mode: DictationMode
+    /// 录音剩余秒数；临近上限（≤ countdownWarnSeconds）才呈现倒计时
+    var remainingSeconds: Int?
     var onStop: () -> Void
     var onCancel: () -> Void
 
@@ -377,6 +422,12 @@ private struct RecordingPill: View {
             .frame(width: 8, height: 8)
             .animation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.62), value: level)
             LevelBars(level: level, tint: Color(hex: 0xEAEAEA))
+            if let countdown {
+                Text(countdown)
+                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(isCritical ? Palette.warning : Color(hex: 0x9A9A9A))
+                    .accessibilityLabel("剩余 \(countdown)")
+            }
             PillCircleButton(
                 systemName: "xmark",
                 background: Color(hex: 0x3A3635),
@@ -409,6 +460,70 @@ private struct RecordingPill: View {
         if editing { return .orange }
         switch mode {
         case .dictation: return Color(hex: 0xFE3032)
+        case .translate: return .teal
+        case .ask: return .blue
+        }
+    }
+
+    /// 剩余时间 mm:ss；仅在临近上限时返回，平时为 nil（不占位）
+    private var countdown: String? {
+        guard let remaining = remainingSeconds,
+              TimeInterval(remaining) <= SettingsStore.shared.countdownWarnSeconds else { return nil }
+        let clamped = max(0, remaining)
+        return String(format: "%02d:%02d", clamped / 60, clamped % 60)
+    }
+
+    /// 最后 10 秒转告警色
+    private var isCritical: Bool {
+        guard let remaining = remainingSeconds else { return false }
+        return remaining <= 10
+    }
+}
+
+/// 唤醒麦克风过渡胶囊：与录音态同底深色，内部一道左右扫光表示「正在准备」
+/// （对齐 Typeless 的 loadingMove）。尊重减弱动态效果时退化为静态三点。
+private struct StartingPill: View {
+    var mode: DictationMode
+
+    @State private var animating = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let trackWidth: CGFloat = 96
+
+    var body: some View {
+        ZStack {
+            // 与 LevelBars 等宽的轨道，避免唤醒→录音切换时胶囊宽度跳变
+            Capsule()
+                .fill(Color(hex: 0x3A3635))
+                .frame(width: Self.trackWidth, height: 4)
+            if reduceMotion {
+                HStack(spacing: 6) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        Circle().fill(sweepColor).frame(width: 5, height: 5)
+                    }
+                }
+            } else {
+                Capsule()
+                    .fill(sweepColor)
+                    .frame(width: 26, height: 4)
+                    .offset(x: animating ? (Self.trackWidth - 26) / 2 : -(Self.trackWidth - 26) / 2)
+                    .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: animating)
+            }
+        }
+        .frame(width: Self.trackWidth, height: 36)
+        .padding(.horizontal, GaltDesign.Spacing.sm)
+        .background(HUDStyle.fill)
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(HUDStyle.stroke, lineWidth: 1))
+        .onAppear { animating = true }
+        .accessibilityElement()
+        .accessibilityLabel("正在唤醒麦克风")
+    }
+
+    /// 扫光颜色按模式取色，与录音态红点/青/蓝呼应；默认听写用近白以保证对比
+    private var sweepColor: Color {
+        switch mode {
+        case .dictation: return Color(hex: 0xEAEAEA)
         case .translate: return .teal
         case .ask: return .blue
         }
