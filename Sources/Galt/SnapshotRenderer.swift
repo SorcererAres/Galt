@@ -108,9 +108,11 @@ enum SnapshotRenderer {
         let hudCases: [(HUDPhase, String?)] = [
             (.idle, nil),
             (.recording(locked: false, editing: false, mode: .dictation), "开始听写"),
-            (.processing, "正在转写润色"),
+            (.processing(.transcribing), "正在转写"),
+            (.processing(.polishing), "正在润色"),
             (.success("x"), "已插入文本"),
             (.error("网络错误"), "网络错误"),
+            (.failure("网络错误"), "网络错误。可点击重试"),
         ]
         let hudOk = hudCases.allSatisfy { HUDState.announcement(for: $0.0) == $0.1 }
         NSLog(hudOk ? "✓ HUD 全部阶段 VoiceOver 播报文案正确" : "✗ HUD 播报文案有误")

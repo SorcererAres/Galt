@@ -1,12 +1,21 @@
 import AppKit
 import SwiftUI
 
+/// 处理态的细分阶段：转写（STT）与润色（LLM）串行，分别给出独立文案，
+/// 让用户在长录音时清楚卡在哪一步，而非笼统的「处理中」。
+enum ProcessingStage: Equatable {
+    case transcribing
+    case polishing
+}
+
 enum HUDPhase: Equatable {
     case idle
     case recording(locked: Bool, editing: Bool, mode: DictationMode)
-    case processing
+    case processing(ProcessingStage)
     case success(String)
     case error(String)
+    /// 可重试的失败（转写/润色出错）——保留本次音频，HUD 提供「重试」按钮
+    case failure(String)
     /// 录音过短或未捕获到语音——非错误，仅做一次轻量提示后淡出
     case empty
 }
@@ -32,9 +41,11 @@ final class HUDState: ObservableObject {
         switch phase {
         case .idle: return nil
         case .recording: return "开始听写"
-        case .processing: return "正在转写润色"
+        case .processing(.transcribing): return "正在转写"
+        case .processing(.polishing): return "正在润色"
         case .success: return "已插入文本"
         case .error(let text): return text
+        case .failure(let text): return "\(text)。可点击重试"
         case .empty: return "未捕获到语音"
         }
     }
@@ -53,14 +64,28 @@ final class HUDState: ObservableObject {
 
 /// 屏幕底部居中的悬浮状态胶囊（系统材质，随浅色/深色模式自适应）
 final class HUDController {
+    /// 面板最小高度：宽度按内容自适应，高度则不低于此值。短内容（status 态约 38px）若让面板紧贴，
+    /// 会失去原固定 64px 面板的上下安全边距、并贴近屏幕底边显得被切。保留最小高度 + 胶囊居中，
+    /// 既补回呼吸空间，也把胶囊抬离屏幕底边。与改造前的面板高度一致。
+    private static let minPanelHeight: CGFloat = 64
+
     let state = HUDState()
     private var panel: NSPanel?
+    private var hostingView: NSHostingView<HUDView>?
     private var hideWorkItem: DispatchWorkItem?
+    /// 面板当前贴合的内容尺寸，用于避免重复改窗（同尺寸不再动画）
+    private var currentContentSize: NSSize = .zero
 
     /// 用户点击 HUD 上的「确认 ✓」按钮：结束并转写本次听写
     var onStopRequested: (() -> Void)?
     /// 用户点击 HUD 上的「取消 ✕」按钮：丢弃本次录音，不转写
     var onCancelRequested: (() -> Void)?
+    /// 用户点击失败态「重试」按钮：用保留的音频重跑
+    var onRetryRequested: (() -> Void)?
+    /// 用户点击失败态「关闭 ✕」按钮：放弃重试
+    var onDismissRequested: (() -> Void)?
+    /// 用户点击成功态「撤销」按钮：删除刚插入的文本（语音编辑则恢复原文）
+    var onUndoRequested: (() -> Void)?
 
     private var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -68,26 +93,44 @@ final class HUDController {
 
     init() {
         state.onPhaseChange = { [weak self] phase in
-            self?.updateInteractivity(for: phase)
+            guard let self else { return }
+            self.updateInteractivity(for: phase)
+            // phase 变化即按新内容贴合面板。fittingSize 在切换后同步即为正确最终值（已无尺寸动画），
+            // 同步先量一次让改窗与内容切换同帧；异步再校正一次兜底。
+            self.resizeToContent()
+            DispatchQueue.main.async { self.resizeToContent() }
         }
     }
 
-    /// 仅在「锁定听写」时让 HUD 接收鼠标事件——保证其它阶段点击穿透到下方应用
+    /// 在「锁定听写」「成功态（撤销）」「失败态（重试）」时让 HUD 接收鼠标事件——其它阶段点击穿透到下方应用
     private func updateInteractivity(for phase: HUDPhase) {
         guard let panel else { return }
-        if case .recording(let locked, _, _) = phase, locked {
+        switch phase {
+        case .recording(let locked, _, _) where locked:
             panel.ignoresMouseEvents = false
-        } else {
+        case .success, .failure:
+            panel.ignoresMouseEvents = false
+        default:
             panel.ignoresMouseEvents = true
         }
+    }
+
+    /// 取消已排期的自动淡出（失败态等待用户操作期间，重试重新开始时调用）
+    func cancelScheduledHide() {
+        hideWorkItem?.cancel()
     }
 
     func show() {
         hideWorkItem?.cancel()
         if panel == nil { panel = makePanel() }
-        position()
         guard let panel else { return }
-        // 已在屏上则只更新位置，避免重复入场动画
+        // 入场前先按当前内容量好尺寸并居中，让滑入动画用的是正确的目标 frame
+        let size = measuredContentSize()
+        if size.width > 0, size.height > 0 {
+            currentContentSize = size
+            positionPanel(size: size)
+        }
+        // 已在屏上则只更新位置（尺寸由 onPhaseChange → resizeToContent 跟随），避免重复入场动画
         guard !panel.isVisible else { return }
 
         if reduceMotion {
@@ -140,7 +183,8 @@ final class HUDController {
 
     private func makePanel() -> NSPanel {
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 64),
+            // 初始尺寸仅占位，show() 入场播种 + onPhaseChange→resizeToContent 会按内容贴合
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 44),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -151,22 +195,58 @@ final class HUDController {
         panel.level = .statusBar
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentView = NSHostingView(rootView: HUDView(
+        let hosting = NSHostingView(rootView: HUDView(
             state: state,
             onStop: { [weak self] in self?.onStopRequested?() },
-            onCancel: { [weak self] in self?.onCancelRequested?() }
+            onCancel: { [weak self] in self?.onCancelRequested?() },
+            onRetry: { [weak self] in self?.onRetryRequested?() },
+            onDismiss: { [weak self] in self?.onDismissRequested?() },
+            onUndo: { [weak self] in self?.onUndoRequested?() }
         ))
+        panel.contentView = hosting
+        hostingView = hosting
         // 创建时按当前 phase 同步一次交互态，避免首次锁定前回调未触发
         updateInteractivity(for: state.phase)
         return panel
     }
 
-    private func position() {
-        guard let screen = NSScreen.main, let panel else { return }
-        let frame = screen.visibleFrame
-        let size = panel.frame.size
-        panel.setFrameOrigin(NSPoint(x: frame.midX - size.width / 2, y: frame.minY + 32))
+    /// 同步量出当前 SwiftUI 内容的贴合尺寸（强制一次布局，确保 phase 刚切换也拿到新值）。
+    /// 宽度按内容自适应；高度夹住最小值（见 minPanelHeight），胶囊由居中 frame 在面板内居中。
+    private func measuredContentSize() -> NSSize {
+        guard let hostingView else { return currentContentSize }
+        hostingView.layoutSubtreeIfNeeded()
+        let fit = hostingView.fittingSize
+        return NSSize(width: ceil(fit.width), height: max(ceil(fit.height), Self.minPanelHeight))
     }
+
+    /// phase 变化后按内容贴合面板并重新居中（即时定位，不做尺寸动画）
+    private func resizeToContent() {
+        guard panel != nil else { return }
+        let target = measuredContentSize()
+        guard target.width > 0, target.height > 0, target != currentContentSize else { return }
+        currentContentSize = target
+        positionPanel(size: target)
+    }
+
+    /// 按给定尺寸把面板摆到「鼠标所在屏」底部居中（borderless 下 frame == content）
+    private func positionPanel(size: NSSize) {
+        guard let panel else { return }
+        // Galt 常驻后台、自身无 key window，NSScreen.main 会指向「含 key window 的屏」，
+        // 多屏时会把 HUD 弹到非当前屏。改用鼠标所在屏，贴合用户正在操作的位置。
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(mouse) }
+            ?? NSScreen.main
+        guard let screen else { return }
+        let visible = screen.visibleFrame
+        let origin = NSPoint(x: visible.midX - size.width / 2, y: visible.minY + 32)
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+    }
+}
+
+/// HUD 浮层统一深色样式（恒为浮层深色控件，不随系统亮暗变化，对齐 Figma 录音胶囊）
+private enum HUDStyle {
+    static let fill = Color(hex: 0x1B1B1B)
+    static let stroke = Color(hex: 0x2D2D2D)
 }
 
 /// 系统材质背景（毛玻璃，blendingMode 取窗口后方内容）
@@ -186,16 +266,23 @@ struct HUDView: View {
     @ObservedObject var state: HUDState
     var onStop: () -> Void = {}
     var onCancel: () -> Void = {}
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var onRetry: () -> Void = {}
+    var onDismiss: () -> Void = {}
+    var onUndo: () -> Void = {}
 
     var body: some View {
-        VStack {
-            Spacer()
-            phaseView
-                .animation(GaltDesign.Motion.highlight(reduceMotion), value: state.phase)
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity)
+        // 面板尺寸由 HUDController 在 phase 变化时用 fittingSize 量定（见 measuredContentSize）。
+        // 这里刻意「不」做两件事，都是踩过的坑：
+        //   1) 不对 phase 之间做尺寸动画——否则改窗会追着插值中的尺寸跑，真机上表现为切换时窗口飘移；
+        //   2) 不用 GeometryReader 上报尺寸——success/error 带 frame(maxWidth:400) 是横向弹性的，
+        //      GeometryReader 上报值取决于被提议的窗口宽度，会和「按上报值改窗」构成反馈环、卡在错误尺寸。
+        // fittingSize 不依赖被提议宽度，量值稳定且正确。胶囊内部动画（红点、声波）各自独立不受影响。
+        phaseView
+            .fixedSize(horizontal: false, vertical: true)
+            // 居中兜底：万一面板尺寸比内容大（尺寸更新滞后一帧、或 ceil 取整留缝），让胶囊在面板内
+            // 居中而非左上对齐——否则无 maxWidth 的窄状态（processing/empty）会明显偏左。
+            // fittingSize 对 maxWidth:.infinity 取的是内容固有尺寸，测量不受影响（已实测验证）。
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// 录音态使用独立的深色胶囊（对齐 Figma），其余态沿用系统材质胶囊
@@ -213,37 +300,37 @@ struct HUDView: View {
                 onStop: onStop,
                 onCancel: onCancel
             )
+        case .success(let text):
+            SuccessCapsule(text: text, onUndo: onUndo)
+        case .failure(let message):
+            FailureCapsule(message: message, onRetry: onRetry, onDismiss: onDismiss)
         default:
             statusCapsule
         }
     }
 
-    /// 处理 / 成功 / 错误 / 空结果——轻量系统材质胶囊
+    /// 处理 / 成功 / 错误 / 空结果——统一深色浮层胶囊（与录音态同底）
+    /// 强制 .dark 环境：ProgressView、.secondary 文字、Palette 语义色在深底自动取浅色值
     @ViewBuilder
     private var statusCapsule: some View {
         statusContent
             .font(.system(size: 13, weight: .medium))
             .padding(.horizontal, 18)
             .padding(.vertical, 11)
-            .background(HUDMaterial())
+            .background(HUDStyle.fill)
             .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(.quaternary, lineWidth: 0.5))
+            .overlay(Capsule().strokeBorder(HUDStyle.stroke, lineWidth: 1))
+            .environment(\.colorScheme, .dark)
     }
 
     @ViewBuilder
     private var statusContent: some View {
         switch state.phase {
-        case .processing:
+        case .processing(let stage):
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
-                Text("正在转写润色…").foregroundStyle(.secondary)
+                Text(stage == .transcribing ? "正在转写…" : "正在润色…").foregroundStyle(.secondary)
             }
-        case .success(let text):
-            HStack(spacing: GaltDesign.Spacing.sm) {
-                SuccessIcon()
-                Text(text).lineLimit(1).truncationMode(.tail)
-            }
-            .frame(maxWidth: 400)
         case .error(let message):
             HStack(spacing: GaltDesign.Spacing.sm) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -272,10 +359,6 @@ private struct RecordingPill: View {
     var onCancel: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    // Figma 固定深色样式（不随系统亮暗变化，恒为浮层深色控件）
-    private static let fill = Color(hex: 0x1B1B1B)
-    private static let stroke = Color(hex: 0x2D2D2D)
 
     var body: some View {
         HStack(spacing: GaltDesign.Spacing.xxs) {
@@ -315,9 +398,9 @@ private struct RecordingPill: View {
         }
         .padding(.horizontal, GaltDesign.Spacing.sm)
         .frame(height: 36)
-        .background(Self.fill)
+        .background(HUDStyle.fill)
         .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(Self.stroke, lineWidth: 1))
+        .overlay(Capsule().strokeBorder(HUDStyle.stroke, lineWidth: 1))
         // 非锁定（按住说话）时只读展示：鼠标事件由 HUDController 在锁定时才放行
         .accessibilityElement(children: .contain)
     }
@@ -329,6 +412,90 @@ private struct RecordingPill: View {
         case .translate: return .teal
         case .ask: return .blue
         }
+    }
+}
+
+/// 浅底深字的小胶囊文字按钮（失败态「重试」、成功态「撤销」共用）
+private struct PillTextButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color(hex: 0x1B1B1B))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(Color(hex: 0xEAEAEA))
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(PressableButtonStyle())
+    }
+}
+
+/// 成功胶囊：对勾 + 成稿预览 + 「撤销」按钮（短暂可交互，过后自动淡出）
+private struct SuccessCapsule: View {
+    let text: String
+    let onUndo: () -> Void
+
+    var body: some View {
+        HStack(spacing: GaltDesign.Spacing.sm) {
+            SuccessIcon()
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 320)
+            PillTextButton(title: "撤销", action: onUndo)
+                .help("删除刚插入的文本")
+                .accessibilityLabel("撤销插入")
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(HUDStyle.fill)
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(HUDStyle.stroke, lineWidth: 1))
+        .environment(\.colorScheme, .dark)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// 可重试的失败胶囊：警示文案 + 「重试」+ 「关闭 ✕」（与录音/状态胶囊同底深色）
+private struct FailureCapsule: View {
+    let message: String
+    let onRetry: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: GaltDesign.Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Palette.warning)
+            Text(message)
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(2)
+                .frame(maxWidth: 280)
+            PillTextButton(title: "重试", action: onRetry)
+                .help("用刚才的录音重试")
+                .accessibilityLabel("重试")
+            PillCircleButton(
+                systemName: "xmark",
+                background: Color(hex: 0x3A3635),
+                foreground: Color(hex: 0xEAEAEA),
+                border: Color(hex: 0x696564),
+                action: onDismiss
+            )
+            .help("关闭")
+            .accessibilityLabel("关闭")
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(HUDStyle.fill)
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(HUDStyle.stroke, lineWidth: 1))
+        .environment(\.colorScheme, .dark)
+        .accessibilityElement(children: .contain)
     }
 }
 

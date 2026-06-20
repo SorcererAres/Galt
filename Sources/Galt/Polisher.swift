@@ -15,7 +15,28 @@ struct Polisher {
          "这是笔记/文档场景：适当使用列表与分段组织内容。"),
     ]
 
-    func polish(_ raw: String, appName: String?, bundleId: String?, forceTranslationTo: String? = nil) async throws -> String {
+    /// 距上次预热的最短间隔（秒）；连接池里的 keep-alive 连接可在此期间复用
+    private static var lastPrewarm: Date?
+    private static let prewarmInterval: TimeInterval = 30
+
+    /// 预热当前 LLM 厂商的连接：录音一开始就异步建立 TLS，待润色时直接复用，省掉一次握手 RTT。
+    /// 打到 /models（GET），即便厂商无此端点，TLS 连接也已落入 URLSession 连接池。
+    static func prewarm() {
+        if let last = lastPrewarm, Date().timeIntervalSince(last) < prewarmInterval { return }
+        let providerId = SettingsStore.shared.llmProviderId
+        let key = SettingsStore.shared.llmKey(forProvider: providerId)
+        guard !key.isEmpty else { return }
+        let base = SettingsStore.shared.baseURL(forProvider: providerId, default: LLMProviderInfo.byId(providerId).base)
+        guard let url = URL(string: "\(base)/models") else { return }
+        lastPrewarm = Date()
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
+    }
+
+    func polish(_ raw: String, appName: String?, bundleId: String?, forceTranslationTo: String? = nil, onDelta: (@MainActor (String) -> Void)? = nil) async throws -> String {
         let key = SettingsStore.shared.llmKey(forProvider: SettingsStore.shared.llmProviderId)
         guard !key.isEmpty else { return raw }
 
@@ -41,11 +62,11 @@ struct Polisher {
             system += "\n最后一步：把整理后的文本翻译成\(target)，措辞自然地道，如同母语者所写，只输出译文。"
         }
 
-        return try await chat(system: system, user: raw, fallback: raw)
+        return try await chat(system: system, user: raw, fallback: raw, onDelta: onDelta)
     }
 
     /// 随便问：口述问题，直接输出答案
-    func answer(_ question: String, appName: String?) async throws -> String {
+    func answer(_ question: String, appName: String?, onDelta: (@MainActor (String) -> Void)? = nil) async throws -> String {
         let key = SettingsStore.shared.llmKey(forProvider: SettingsStore.shared.llmProviderId)
         guard !key.isEmpty else { throw STTError.missingAPIKey }
 
@@ -56,11 +77,11 @@ struct Polisher {
         if let appName, !appName.isEmpty {
             system += "\n用户当前正在使用应用「\(appName)」。"
         }
-        return try await chat(system: system, user: question, fallback: question)
+        return try await chat(system: system, user: question, fallback: question, onDelta: onDelta)
     }
 
     /// 语音编辑：根据口述指令改写选中文本
-    func edit(_ original: String, instruction: String, appName: String?) async throws -> String {
+    func edit(_ original: String, instruction: String, appName: String?, onDelta: (@MainActor (String) -> Void)? = nil) async throws -> String {
         let key = SettingsStore.shared.llmKey(forProvider: SettingsStore.shared.llmProviderId)
         guard !key.isEmpty else { throw STTError.missingAPIKey }
 
@@ -72,23 +93,25 @@ struct Polisher {
             system += "\n该文本位于应用「\(appName)」中。"
         }
         let user = "【原文】\n\(original)\n\n【修改指令】\n\(instruction)"
-        return try await chat(system: system, user: user, fallback: original)
+        return try await chat(system: system, user: user, fallback: original, onDelta: onDelta)
     }
 
-    /// 调用所选 LLM 厂商的 Chat Completions（OpenAI 兼容），空结果时返回 fallback
-    private func chat(system: String, user: String, fallback: String) async throws -> String {
+    /// 调用所选 LLM 厂商的 Chat Completions（OpenAI 兼容），空结果时返回 fallback。
+    /// 传入 onDelta 时改用流式（stream=true），边收 token 边回调，显著降低首字延迟。
+    private func chat(system: String, user: String, fallback: String, onDelta: (@MainActor (String) -> Void)? = nil) async throws -> String {
         let providerId = SettingsStore.shared.llmProviderId
         let provider = LLMProviderInfo.byId(providerId)
         let key = SettingsStore.shared.llmKey(forProvider: providerId)
         guard !key.isEmpty else { return fallback }
 
+        let streaming = onDelta != nil
         let base = SettingsStore.shared.baseURL(forProvider: providerId, default: provider.base)
         var request = URLRequest(url: URL(string: "\(base)/chat/completions")!)
         request.httpMethod = "POST"
         request.timeoutInterval = SettingsStore.shared.requestTimeout(forProvider: providerId)
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": SettingsStore.shared.llmModel(forProvider: providerId),
             "temperature": 0.2,
             "messages": [
@@ -96,24 +119,63 @@ struct Polisher {
                 ["role": "user", "content": user],
             ],
         ]
+        if streaming { payload["stream"] = true }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw STTError.http(code, String(data: data, encoding: .utf8) ?? "")
+        guard streaming else {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                throw STTError.http(code, String(data: data, encoding: .utf8) ?? "")
+            }
+            struct ChatResponse: Decodable {
+                struct Choice: Decodable {
+                    struct Message: Decodable { let content: String }
+                    let message: Message
+                }
+                let choices: [Choice]
+            }
+            let content = try JSONDecoder().decode(ChatResponse.self, from: data)
+                .choices.first?.message.content ?? ""
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? fallback : trimmed
         }
 
-        struct ChatResponse: Decodable {
+        // 流式：逐行解析 SSE，累积全文同时把增量片段回调出去
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            var body = ""
+            for try await line in bytes.lines { body += line }
+            throw STTError.http((response as? HTTPURLResponse)?.statusCode ?? -1, body)
+        }
+
+        struct StreamChunk: Decodable {
             struct Choice: Decodable {
-                struct Message: Decodable { let content: String }
-                let message: Message
+                struct Delta: Decodable { let content: String? }
+                let delta: Delta
             }
             let choices: [Choice]
         }
-        let content = try JSONDecoder().decode(ChatResponse.self, from: data)
-            .choices.first?.message.content ?? ""
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        var full = ""
+        var sawDone = false
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data:") else { continue }
+            let payloadStr = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if payloadStr == "[DONE]" {
+                sawDone = true
+                break
+            }
+            guard let chunkData = payloadStr.data(using: .utf8),
+                  let chunk = try? JSONDecoder().decode(StreamChunk.self, from: chunkData),
+                  let piece = chunk.choices.first?.delta.content, !piece.isEmpty
+            else { continue }
+            full += piece
+            await onDelta?(piece)
+        }
+        guard sawDone else {
+            throw STTError.http(-1, "流式响应中断，已撤销本次增量输入")
+        }
+        let trimmed = full.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : trimmed
     }
 
