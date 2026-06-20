@@ -25,7 +25,7 @@ Non-goals:
 ## 2. Platform Requirements
 
 Minimum platform:
-- macOS 13.0 or later.
+- macOS 14.0 or later.
 - SwiftUI + AppKit hybrid implementation.
 - `LSUIElement = true`; the app is primarily accessed from the menu bar.
 

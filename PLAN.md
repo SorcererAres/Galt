@@ -60,6 +60,6 @@ Galt.app（菜单栏 App，LSUIElement）
 
 ## 运行要求
 
-- macOS 13+，需授权「麦克风」与「辅助功能」
+- macOS 14+，需授权「麦克风」与「辅助功能」
 - 云端引擎需 Groq API Key（菜单栏 → 设置 API Key，或环境变量 `GROQ_API_KEY`）
 - 建议将 系统设置 → 键盘 →「按下 🌐 键时」设为「无操作」，避免与听写热键冲突

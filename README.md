@@ -9,7 +9,7 @@ make run     # 编译 → 打包 dist/Galt.app → 启动
 make dmg     # 额外生成可分发的 dist/Galt.dmg
 ```
 
-要求：macOS 13+，Xcode 命令行工具。
+要求：macOS 14+，Xcode 命令行工具。
 
 ## 首次使用
 
