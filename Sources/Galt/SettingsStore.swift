@@ -150,6 +150,13 @@ final class SettingsStore {
     /// 临近时长上限时，剩余多少秒开始在录音胶囊上显示倒计时
     let countdownWarnSeconds: TimeInterval = 60
 
+    /// 录音胶囊音量可视化灵敏度：dB 归一值整体放大倍率（越大越易打满，1 = 原始）。
+    /// 参考 Typeless（其 sensitivity=2）；取 1.6 留出余量，让说话时波形有峰谷起伏而非一直顶满。
+    let micLevelSensitivity: Float = 1.6
+
+    /// 音量可视化的噪声底（dB）：低于此值视为静默（映射到 0），0dB 映射到 1。
+    let micLevelNoiseFloorDB: Float = -50
+
     /// 录音胶囊的新手教学提示最多展示次数（之后不再打扰）
     let dictationHintMaxShows = 3
 

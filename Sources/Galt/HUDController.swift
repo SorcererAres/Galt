@@ -411,13 +411,13 @@ private struct RecordingPill: View {
             ZStack {
                 Circle()
                     .fill(dotColor)
-                    .opacity(reduceMotion ? 0 : min(Double(level) * 2.6, 0.55))
+                    .opacity(reduceMotion ? 0 : min(Double(level) * 0.6, 0.55))
                     .frame(width: 18, height: 18)
                     .blur(radius: 3)
                 Circle()
                     .fill(dotColor)
                     .frame(width: 8, height: 8)
-                    .scaleEffect(reduceMotion ? 1.0 : 1.0 + min(CGFloat(level) * 1.3, 0.42))
+                    .scaleEffect(reduceMotion ? 1.0 : 1.0 + min(CGFloat(level) * 0.5, 0.42))
             }
             .frame(width: 8, height: 8)
             .animation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.62), value: level)
@@ -660,59 +660,95 @@ private struct SuccessIcon: View {
     }
 }
 
-/// 实时滚动声波：新采样自右侧进入、向左流动，逐条独立平滑衰减
-/// 默认尺寸对齐 Figma 录音胶垫（96×36），`tint` 控制条色（深底用浅色）
+/// 实时录音声波：借鉴 Typeless 的「中心扩散」等化器——音量脉冲在中心附近注入，
+/// 向两侧逐格荡开并随机老化衰减，配自适应噪声底，读作有机的呼吸波而非左滚动条。
+/// 默认尺寸对齐 Figma 录音胶垫（96×36），`tint` 控制条色（深底用浅色）。
 struct LevelBars: View {
     var level: Float
     var tint: Color = .secondary
 
-    private static let count = 24
-    @State private var samples = [CGFloat](repeating: 0, count: LevelBars.count)
-    @State private var birth = Date()
+    /// 可调参数集中于此，便于实机调手感
+    private enum K {
+        static let count = 24                       // 竖条数（宽 96 / (2+2)）
+        static let minH: CGFloat = 3                // 最小（静止）高度
+        static let maxH: CGFloat = 24               // 满音量高度
+        static let frameW: CGFloat = 96
+        static let frameH: CGFloat = 36
+        // 中心扩散
+        static let propagate: CGFloat = 0.45        // 每帧向外传播的混合比例
+        static let propDecay: CGFloat = 0.86        // 传播时的衰减
+        static let selfDecay: ClosedRange<CGFloat> = 0.90...0.97 // 每条独立随机老化
+        static let centerJitter = 2                 // 注入点相对中心的随机偏移
+        // 触发 / 响应
+        static let trigger: Float = 0.04            // 减底噪后超过此值才注入脉冲
+        static let exponent: Float = 0.5            // 响应曲线（抬高小值）
+        static let idleShimmer: Float = 0.06        // 静默时偶发微动的概率
+        // 自适应噪声底（随环境跟随）
+        static let floorFast: Float = 0.06          // 安静时快速下移
+        static let floorSlow: Float = 0.002         // 有声时缓慢上移
+        static let floorMargin: Float = 0.01
+        static let floorMax: Float = 0.35
+        static let visualMargin: Float = 0.006
+    }
+
+    @State private var vols = [CGFloat](repeating: K.minH, count: K.count)
+    @State private var floor: Float = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // TimelineView 每帧重绘：让「呼吸基线」即使没说话也持续微动
+        // 时钟每帧驱动一次扩散步进；减弱动态效果时暂停（静态最小条）
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
-            let elapsed = context.date.timeIntervalSince(birth)
             HStack(spacing: GaltDesign.Spacing.xxxs) {
-                ForEach(0..<Self.count, id: \.self) { i in
-                    let amp = combinedAmplitude(at: i, time: elapsed)
+                ForEach(0..<K.count, id: \.self) { i in
                     Capsule()
                         .fill(tint)
-                        // 中心对齐：振幅越大越向上下两侧延展，读作声波而非进度
-                        .frame(width: 2, height: 3 + amp * 20)
-                        .opacity(0.4 + Double(amp) * 0.6)
+                        .frame(width: 2, height: vols[i])
+                        .opacity(0.4 + Double((vols[i] - K.minH) / (K.maxH - K.minH)) * 0.6)
                 }
             }
-            .frame(width: 96, height: 36)
-            .onChange(of: level, perform: advance)
+            .frame(width: K.frameW, height: K.frameH)
+            .onChange(of: context.date) { _, _ in step() }
         }
     }
 
-    /// 实采样 + 每条独立相位的低频呼吸基线——静默时仍有微动；说话越大、呼吸越被压制
-    private func combinedAmplitude(at index: Int, time: TimeInterval) -> CGFloat {
-        let sample = samples[index]
-        if reduceMotion { return sample }
-        let phase = Double(index) * 0.42        // 24 条覆盖约 1.6 个完整正弦周期，形成横向涟漪
-        let breathing = (sin(time * 2.4 + phase) + 1) * 0.5 * 0.18 // 0..0.18，基线天花板
-        return max(sample, CGFloat(breathing) * (1 - sample))      // 与实采样取较大，平滑过渡
+    /// 一帧扩散步进：自适应底噪 → 中心向两侧传播 → 独立老化 → 触发新脉冲
+    private func step() {
+        // 自适应噪声底：安静时快速跟随、有声时缓慢上移，只显示「超过环境噪声」的部分
+        let f: Float = level <= floor + K.floorMargin ? K.floorFast : K.floorSlow
+        floor = min(K.floorMax, max(0, floor * (1 - f) + level * f))
+        let norm = max(0, level - floor - K.visualMargin)
+
+        let half = K.count / 2
+        var next = vols
+
+        // ① 中心向两侧传播：每条吸收靠中心一侧邻居的衰减值，形成由内向外的流动
+        for i in 0..<K.count {
+            let inner = i < half ? min(i + 1, K.count - 1) : max(i - 1, 0)
+            let propagated = vols[inner] * K.propDecay * CGFloat.random(in: 0.9...1.1)
+            next[i] = max(K.minH, vols[i] * (1 - K.propagate) + propagated * K.propagate)
+        }
+        // ② 每条独立随机老化衰减——避免等高死板
+        for i in 0..<K.count {
+            next[i] = max(K.minH, next[i] * CGFloat.random(in: K.selfDecay))
+        }
+        // ③ 触发：音量过阈值则按概率在中心附近注入新脉冲；静默时偶发极小微动保持「活气」
+        if norm > K.trigger, Float.random(in: 0...1) < min(0.85, norm * 4) {
+            let c = clampIndex(half + Int.random(in: -K.centerJitter...K.centerJitter))
+            let shaped = pow(min(1, norm), K.exponent)
+            let target = K.minH + (K.maxH - K.minH) * CGFloat(shaped) * CGFloat.random(in: 0.9...1.1)
+            next[c] = max(next[c], min(K.maxH, target))
+        } else if norm <= K.trigger, Float.random(in: 0...1) < K.idleShimmer {
+            let c = clampIndex(half + Int.random(in: -1...1))
+            next[c] = max(next[c], K.minH + (K.maxH - K.minH) * CGFloat.random(in: 0.05...0.14))
+        }
+
+        // 每条高度用 80ms 缓动过渡（对齐 Typeless 的 transition），跳变被磨平
+        withAnimation(.easeOut(duration: 0.08)) {
+            vols = next
+        }
     }
 
-    /// 推入一个新采样，整条缓冲区左移一格
-    /// pow(0.55) 把语音的小振幅大幅抬高，避免「常态平直、偶尔暴顶」的死区
-    private func advance(to raw: Float) {
-        let scaled: Float = min(max(raw * 1.6, 0), 1)
-        let curved = pow(scaled, Float(0.55))
-        var next = samples
-        next.removeFirst()
-        next.append(CGFloat(curved))
-        if reduceMotion {
-            samples = next
-        } else {
-            withAnimation(.spring(response: 0.26, dampingFraction: 0.66)) {
-                samples = next
-            }
-        }
+    private func clampIndex(_ i: Int) -> Int {
+        min(max(i, 0), K.count - 1)
     }
 }
