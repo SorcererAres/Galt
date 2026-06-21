@@ -47,10 +47,10 @@ final class AudioRecorder {
     /// db = 20·log10(rms)；以 noiseFloor..0 dB 归一，再乘灵敏度并夹到 [0,1]。
     static func perceptualLevel(rms: Float) -> Float {
         guard rms > 0 else { return 0 }
-        let floor = SettingsStore.shared.micLevelNoiseFloorDB
+        let floor = Tuning.MicLevel.noiseFloorDB
         let db = 20 * log10(rms)
         let norm = (max(floor, db) - floor) / (0 - floor)      // floor→0, 0dB→1
-        return max(0, min(1, norm * SettingsStore.shared.micLevelSensitivity))
+        return max(0, min(1, norm * Tuning.MicLevel.sensitivity))
     }
 
     /// 停止录音并返回 16kHz 单声道 WAV；录音过短（<0.3s）返回 nil

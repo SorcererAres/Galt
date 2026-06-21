@@ -140,27 +140,9 @@ final class SettingsStore {
         defaults.removeObject(forKey: "dictationHintShownCount")
     }
 
-    /// 转写模型与润色模型
-    let sttModel = "whisper-large-v3-turbo"
-    let polishModel = "llama-3.3-70b-versatile"
+    // 录音时长上限、倒计时阈值、声波灵敏度、教学提示次数等固定手感常量已移至 `Tuning`（非用户设置）。
 
-    /// 单次听写时长上限（秒），对齐 Typeless 的 6 分钟
-    let maxSessionSeconds: TimeInterval = 360
-
-    /// 临近时长上限时，剩余多少秒开始在录音胶囊上显示倒计时
-    let countdownWarnSeconds: TimeInterval = 60
-
-    /// 录音胶囊音量可视化灵敏度：dB 归一值整体放大倍率（越大越易打满，1 = 原始）。
-    /// 参考 Typeless（其 sensitivity=2）；取 1.6 留出余量，让说话时波形有峰谷起伏而非一直顶满。
-    let micLevelSensitivity: Float = 1.6
-
-    /// 音量可视化的噪声底（dB）：低于此值视为静默（映射到 0），0dB 映射到 1。
-    let micLevelNoiseFloorDB: Float = -50
-
-    /// 录音胶囊的新手教学提示最多展示次数（之后不再打扰）
-    let dictationHintMaxShows = 3
-
-    /// 已展示新手教学提示的次数（持久化，达到上限后不再显示）
+    /// 已展示新手教学提示的次数（持久化，达到 Tuning.Hint.maxShows 后不再显示）
     var dictationHintShownCount: Int {
         get { defaults.integer(forKey: "dictationHintShownCount") }
         set { defaults.set(newValue, forKey: "dictationHintShownCount") }

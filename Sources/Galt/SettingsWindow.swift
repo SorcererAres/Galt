@@ -334,6 +334,7 @@ struct SettingsView: View {
     @AppStorage("engineMode") private var engineMode = "auto"
     @AppStorage("localEngine") private var localEngine = "apple"
     @AppStorage("whisperModelId") private var whisperModelId = "small-q5_1"
+    @AppStorage("correctionLearningEnabled") private var correctionLearningEnabled = true
     @AppStorage("polishEnabled") private var polishEnabled = true
     @AppStorage("cloudSTTProviderId") private var sttProviderId = "groq"
     @AppStorage("llmProviderId") private var llmProviderId = "groq"
@@ -351,6 +352,10 @@ struct SettingsView: View {
     @State private var volcanoProtocol = SettingsStore.shared.volcanoProtocol
     @State private var volcanoResourceId = SettingsStore.shared.volcanoResourceId
     @State private var volcanoEndpoint = SettingsStore.shared.volcanoEndpoint
+    // 百炼 ASR 选用模型（一次性 qwen3-asr-flash / 实时 paraformer），write-through 到 SettingsStore
+    @State private var dashscopeModel = SettingsStore.shared.dashscopeModel
+    // 火山「录音文件」上传 Opus 压缩开关（默认开，失败自动回退 WAV）
+    @AppStorage("compressVolcanoUpload") private var compressVolcanoUpload = true
     // 删除本地模型后自增，触发 modelLibraryPanel 重新读取文件存在状态
     @State private var modelStateTick = 0
     // 模型库：顶部分段 + 主从选中 + 高级折叠 + 表单提示
@@ -388,6 +393,7 @@ struct SettingsView: View {
         volcanoProtocol = SettingsStore.shared.volcanoProtocol
         volcanoResourceId = SettingsStore.shared.volcanoResourceId
         volcanoEndpoint = SettingsStore.shared.volcanoEndpoint
+        dashscopeModel = SettingsStore.shared.dashscopeModel
         reloadSTTFields()
         reloadLLMFields()
         for provider in STTProviderInfo.all {
@@ -710,6 +716,7 @@ struct SettingsView: View {
                 settingsRow(title: "本地模型", subtitle: "仅列出已下载的模型；更多模型在「模型库」下载。") {
                     DropdownPicker(selection: activeLocalSelection, options: localEngineOptions)
                 }
+                settingsToggleRow(title: "纠错自学习", subtitle: "出字后观察你的就地修改，把高频纠正沉淀进个人词典，提升后续识别准确度。", isOn: $correctionLearningEnabled)
             }
 
             settingsPanel(title: "AI润色") {
@@ -924,7 +931,7 @@ struct SettingsView: View {
     /// 模型库列表/表单用的短展示名（对照设计稿，避免完整长名截断）
     private func providerDisplayName(_ id: String, isSTT: Bool) -> String {
         let map: [String: String] = isSTT
-            ? ["groq": "Groq Whisper", "siliconflow": "SenseVoice", "dashscope": "Qwen3 ASR", "volcano": "火山引擎", "openai": "OpenAI"]
+            ? ["groq": "Groq Whisper", "siliconflow": "SenseVoice", "dashscope": "阿里云百炼 ASR", "volcano": "火山引擎", "openai": "OpenAI"]
             : ["groq": "Groq", "dashscope": "阿里云百炼", "ark": "火山方舟", "deepseek": "DeepSeek", "siliconflow": "硅基流动", "openai": "OpenAI"]
         return map[id] ?? (isSTT ? STTProviderInfo.byId(id).name : LLMProviderInfo.byId(id).name)
     }
@@ -1022,6 +1029,9 @@ struct SettingsView: View {
                 if id == "volcano" {
                     // 火山支持多模型：预设一键带出 + 协议/资源/接口可自填
                     volcanoModelSection()
+                } else if id == "dashscope" {
+                    // 百炼支持多模型：一次性 qwen3-asr-flash 与实时 paraformer，下拉选用
+                    dashscopeModelSection()
                 } else {
                     formField(label: "模型", required: true) {
                         if isSTT {
@@ -1162,7 +1172,10 @@ struct SettingsView: View {
     }
 
     private func probeErrorText(_ error: Error) -> String {
-        if case let STTError.http(code, _) = error { return "HTTP \(code)" }
+        if case let STTError.http(code, message) = error {
+            let detail = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return detail.isEmpty ? "HTTP \(code)" : "HTTP \(code) · \(detail.prefix(180))"
+        }
         return error.localizedDescription
     }
 
@@ -1224,6 +1237,22 @@ struct SettingsView: View {
         )
     }
 
+    private var dashscopeModelBinding: Binding<String> {
+        Binding(get: { dashscopeModel },
+                set: { dashscopeModel = $0; SettingsStore.shared.dashscopeModel = $0 })
+    }
+
+    @ViewBuilder
+    private func dashscopeModelSection() -> some View {
+        let options = DashScopeASRModel.presets.map { DropdownOption(value: $0.id, title: $0.name) }
+        formField(label: "模型", required: true) {
+            DropdownPicker(selection: dashscopeModelBinding, options: options, height: 36)
+        }
+        Text("Qwen3-ASR-Flash 走一次性 HTTP 识别；Paraformer 实时为 WebSocket 流式识别（8k-v2 会把录音重采样到 8kHz）。")
+            .font(.system(size: 12))
+            .foregroundStyle(SettingsDesign.rowSubtitle)
+    }
+
     @ViewBuilder
     private func volcanoModelSection() -> some View {
         let presetOptions = VolcanoASRModel.presets.map { DropdownOption(value: $0.id, title: $0.name) }
@@ -1251,6 +1280,11 @@ struct SettingsView: View {
         Text("预设可一键带出官方配置；也可自行修改 Resource ID / 接口地址或切换协议。流式走 WebSocket（wss），一次性走 HTTP（https）。")
             .font(.system(size: 12))
             .foregroundStyle(SettingsDesign.rowSubtitle)
+        settingsToggleRow(
+            title: "Opus 压缩上传",
+            subtitle: "录音文件协议（一次性/异步）上传前用 Opus 压缩，体积约降 10×；编码失败自动回退 WAV。若账号拒收 ogg_opus 可关闭。",
+            isOn: $compressVolcanoUpload
+        )
     }
 
     /// 模型输入框右侧的「已获取模型」下拉：仅在获取到模型时出现，选中即填入输入框。

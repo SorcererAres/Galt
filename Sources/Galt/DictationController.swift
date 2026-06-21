@@ -90,9 +90,6 @@ final class DictationController {
     /// 录音活动状态变化（true=正在采集）；用于驱动菜单栏图标等外部指示
     var onActiveChange: ((Bool) -> Void)?
 
-    /// 点按判定阈值：按下到松开短于该值视为「点按」，进入锁定听写
-    private let tapThreshold: TimeInterval = 0.35
-
     /// 当前生效的本地引擎
     private var local: STTProvider {
         switch SettingsStore.shared.localEngine {
@@ -134,7 +131,7 @@ final class DictationController {
             guard let self, !self.recorder.isRecording else { return }
             self.hud.state.phase = .info("已学习「\(term)」")
             self.hud.show()
-            self.hud.hide(after: 2)
+            self.hud.hide(after: Tuning.HUDDismiss.learnedInfo)
         }
         observeSystemInterruptions()
     }
@@ -181,7 +178,7 @@ final class DictationController {
         // 引擎尚未就绪就松手：按 tap/hold 记下意图，待 ready 后兑现（取消优先，不被覆盖）
         if isStarting, mode == activeMode {
             guard pendingStartupAction != .cancelOnReady else { return }
-            if let down = keyDownAt, Date().timeIntervalSince(down) < tapThreshold {
+            if let down = keyDownAt, Date().timeIntervalSince(down) < Tuning.Hotkey.tapThreshold {
                 pendingStartupAction = .lockOnReady
             } else {
                 pendingStartupAction = .finishOnReady
@@ -189,7 +186,7 @@ final class DictationController {
             return
         }
         guard recorder.isRecording, !locked, mode == activeMode else { return }
-        if let down = keyDownAt, Date().timeIntervalSince(down) < tapThreshold {
+        if let down = keyDownAt, Date().timeIntervalSince(down) < Tuning.Hotkey.tapThreshold {
             locked = true
             hud.state.phase = .recording(locked: true, editing: pendingSelection != nil, mode: activeMode)
             return
@@ -230,7 +227,7 @@ final class DictationController {
         let gen = startupGen
         let mode = activeMode
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + Tuning.Startup.debounce) { [weak self] in
             guard let self, self.isStarting, self.startupGen == gen else { return }
             self.hud.state.phase = .starting(mode: mode)
             self.hud.show()
@@ -288,7 +285,7 @@ final class DictationController {
         AudioDucker.shared.restore()
         hud.state.phase = .error("无法启动录音：\(error.localizedDescription)")
         hud.show()
-        hud.hide(after: 2.5)
+        hud.hide(after: Tuning.HUDDismiss.startFailure)
     }
 
     // MARK: - 倒计时 / 教学提示
@@ -306,7 +303,7 @@ final class DictationController {
 
     private func tickCountdown() {
         guard let started = recordingStartedAt else { return }
-        let remaining = Int(ceil(SettingsStore.shared.maxSessionSeconds - Date().timeIntervalSince(started)))
+        let remaining = Int(ceil(Tuning.Session.maxSeconds - Date().timeIntervalSince(started)))
         if remaining <= 0 {
             finishDictation()
             return
@@ -324,13 +321,13 @@ final class DictationController {
     /// 前若干次录音在胶囊下方短暂展示交互教学提示，达上限后不再打扰
     private func maybeShowHint() {
         let settings = SettingsStore.shared
-        guard settings.dictationHintShownCount < settings.dictationHintMaxShows else { return }
+        guard settings.dictationHintShownCount < Tuning.Hint.maxShows else { return }
         settings.dictationHintShownCount += 1
-        hud.state.recordingHint = "按住说话，松开结束 · 轻点可锁定"
+        hud.state.recordingHint = Tuning.Hint.text
         hintClearWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.hud.state.recordingHint = nil }
         hintClearWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Tuning.Hint.duration, execute: work)
     }
 
     private func clearHint() {
@@ -419,7 +416,7 @@ final class DictationController {
         guard let wav else {
             // 录音过短或无声：给一次轻量反馈再淡出，避免用户以为热键失效
             hud.state.phase = .empty
-            hud.hide(after: 1.2)
+            hud.hide(after: Tuning.HUDDismiss.empty)
             return
         }
 
@@ -596,15 +593,15 @@ final class DictationController {
                         // 出字落定后给焦点字段拍快照，待用户就地纠正后自学习。
                         // 延时让剪贴板粘贴/逐字键入真正写入字段，再读取其值。
                         let inserted = streamSession?.typedAny == true ? (streamSession?.typedText ?? final) : final
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + Tuning.snapshotDelay) {
                             self.editLearner.snapshot(inserted: inserted)
                         }
                         self.hud.state.phase = .success(final)
-                        self.hud.hide(after: 3)
+                        self.hud.hide(after: Tuning.HUDDismiss.success)
                     } else {
                         self.lastInsertion = nil
                         self.hud.state.phase = .error("已复制到剪贴板，可手动 ⌘V")
-                        self.hud.hide(after: 3)
+                        self.hud.hide(after: Tuning.HUDDismiss.error)
                     }
                 }
             } catch {
@@ -624,7 +621,7 @@ final class DictationController {
                         cleanlyRolledBack ? message : "\(message)（部分文字已输入，请检查）"
                     )
                     // 失败态等待用户操作，不主动淡出；超时兜底防止 HUD 永久悬挂
-                    self.hud.hide(after: 12)
+                    self.hud.hide(after: Tuning.HUDDismiss.failure)
                 }
             }
         }

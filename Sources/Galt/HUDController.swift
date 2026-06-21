@@ -468,7 +468,7 @@ private struct RecordingPill: View {
     /// 剩余时间 mm:ss；仅在临近上限时返回，平时为 nil（不占位）
     private var countdown: String? {
         guard let remaining = remainingSeconds,
-              TimeInterval(remaining) <= SettingsStore.shared.countdownWarnSeconds else { return nil }
+              TimeInterval(remaining) <= Tuning.Session.countdownWarnSeconds else { return nil }
         let clamped = max(0, remaining)
         return String(format: "%02d:%02d", clamped / 60, clamped % 60)
     }
