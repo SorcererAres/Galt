@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      # libopus 供 Vendor/opus.xcframework 打包使用（见 scripts/fetch-vendor.sh）
+      - name: Install Opus
+        run: brew install opus
+
+      # 拉取/组装本地引擎框架：sherpa-onnx、onnxruntime、opus（不入库）
+      - name: Fetch vendor frameworks
+        run: make vendor
+
+      - name: Build
+        run: swift build
