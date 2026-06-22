@@ -46,6 +46,7 @@ private final class StreamInsertionSession {
 
 /// 听写编排：热键触发录音 → 引擎路由转写 → 按模式后处理（润色/翻译/问答）→ 注入光标
 /// 触发方式：按住热键说话（hold-to-talk）、点按热键锁定听写（再次点按结束）
+@MainActor
 final class DictationController {
     private let recorder = AudioRecorder()
     private let hud = HUDController()
@@ -137,15 +138,16 @@ final class DictationController {
     /// 监听系统休眠 / 锁屏 / 屏保：录音中途遇到这些就丢弃本次采集，
     /// 避免录音悬挂、或把锁屏后的环境音误转写。
     private func observeSystemInterruptions() {
+        // queue: .main 保证回调在主线程投递，故 assumeIsolated 断言 MainActor 隔离是安全的
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.handleSystemInterruption() }
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.handleSystemInterruption() } }
 
         let dnc = DistributedNotificationCenter.default()
         for name in ["com.apple.screenIsLocked", "com.apple.screensaver.didstart"] {
             dnc.addObserver(
                 forName: Notification.Name(name), object: nil, queue: .main
-            ) { [weak self] _ in self?.handleSystemInterruption() }
+            ) { [weak self] _ in MainActor.assumeIsolated { self?.handleSystemInterruption() } }
         }
     }
 
@@ -231,13 +233,24 @@ final class DictationController {
             self.hud.show()
         }
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
+        // 后台启动避免引擎初始化阻塞主线程：detached 任务只捕获 Sendable 的 recorder，
+        // 不捕获 @MainActor 的 self；结果（nil=成功，非 nil=错误信息）再回主线程兑现状态机。
+        let recorder = self.recorder
+        let startTask = Task.detached(priority: .userInitiated) { () -> String? in
             do {
-                try self.recorder.start()
-                DispatchQueue.main.async { self.handleRecorderStarted(gen: gen) }
+                try recorder.start()
+                return nil
             } catch {
-                DispatchQueue.main.async { self.handleRecorderStartFailed(gen: gen, error: error) }
+                return error.localizedDescription
+            }
+        }
+        Task { [weak self] in
+            let failure = await startTask.value
+            guard let self else { return }
+            if let failure {
+                self.handleRecorderStartFailed(gen: gen, message: failure)
+            } else {
+                self.handleRecorderStarted(gen: gen)
             }
         }
     }
@@ -276,12 +289,12 @@ final class DictationController {
     }
 
     /// 引擎启动失败（主线程）：复用错误态短暂提示后淡出
-    private func handleRecorderStartFailed(gen: Int, error: Error) {
+    private func handleRecorderStartFailed(gen: Int, message: String) {
         guard gen == startupGen else { return }
         isStarting = false
         pendingStartupAction = .none
         AudioDucker.shared.restore()
-        hud.state.phase = .error("无法启动录音：\(error.localizedDescription)")
+        hud.state.phase = .error("无法启动录音：\(message)")
         hud.show()
         hud.hide(after: Tuning.HUDDismiss.startFailure)
     }
@@ -291,8 +304,9 @@ final class DictationController {
     /// 起 1Hz 倒计时：更新剩余秒数，到达上限自动收尾
     private func startCountdown() {
         countdownTimer?.invalidate()
+        // 加到 RunLoop.main，回调必在主线程，assumeIsolated 断言 MainActor 安全
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.tickCountdown()
+            MainActor.assumeIsolated { self?.tickCountdown() }
         }
         RunLoop.main.add(timer, forMode: .common)
         countdownTimer = timer
@@ -657,15 +671,18 @@ final class DictationController {
         hud.state.processingProgress = 0
         let startedAt = Date()
         let duration = max(0.4, estimatedDuration)
+        // 加到 RunLoop.main，回调必在主线程，assumeIsolated 断言 MainActor 安全
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
-            guard let self else {
-                timer.invalidate()
-                return
+            MainActor.assumeIsolated {
+                guard let self else {
+                    timer.invalidate()
+                    return
+                }
+                let elapsed = Date().timeIntervalSince(startedAt)
+                let fraction = min(1, max(0, elapsed / duration))
+                let progress = min(0.96, CGFloat(fraction) * 0.96)
+                self.hud.state.processingProgress = progress
             }
-            let elapsed = Date().timeIntervalSince(startedAt)
-            let fraction = min(1, max(0, elapsed / duration))
-            let progress = min(0.96, CGFloat(fraction) * 0.96)
-            self.hud.state.processingProgress = progress
         }
         processingProgressTimer = timer
         RunLoop.main.add(timer, forMode: .common)

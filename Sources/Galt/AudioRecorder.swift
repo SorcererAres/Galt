@@ -2,7 +2,11 @@ import AVFoundation
 import AudioToolbox
 
 /// 麦克风采集：AVAudioEngine 抓取浮点样本，停止时重采样到 16kHz 单声道并编码为 WAV
-final class AudioRecorder {
+///
+/// `@unchecked Sendable`：供 DictationController 后台线程调用 start()。共享的样本缓冲由 `lock`
+/// 保护；start()（后台）与 stop()（主线程）在生命周期上不重叠——启动窗口内主线程不触碰 recorder，
+/// 故无并发数据竞争。
+final class AudioRecorder: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var samples: [Float] = []
     private let lock = NSLock()
