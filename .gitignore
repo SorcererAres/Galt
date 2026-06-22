@@ -1,19 +1,37 @@
-# macOS
 .DS_Store
 
-# 构建产物
+# Swift Package Manager
 .build/
-dist/
-
-# Xcode / SwiftPM 本地状态
 .swiftpm/
+Package.resolved
 
-# Claude Code 本地配置
-.claude/
+# Xcode
+DerivedData/
+*.xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
 
-# whisper.xcframework 调试符号（不参与构建，体积大）
-Vendor/**/dSYMs/
+# Release artifacts
+dist/
+*.dmg
 
-# 本地引擎二进制框架（约 76MB，按需用 scripts/fetch-vendor.sh 获取，不入库）
-Vendor/sherpa-onnx.xcframework/
+# Local configuration and secrets
+.env
+*.xcconfig
+*.p8
+*.mobileprovision
+*.provisionprofile
+
+# Logs and temporary files
+*.log
+tmp/
+build/
+
+# 参考用第三方应用（Typeless，非本项目源码，约 508MB，不入库）
+Contents/
+
+# 本地引擎二进制框架（按需用 scripts/fetch-vendor.sh 获取，不入库；whisper.xcframework 已入库）
 Vendor/onnxruntime.xcframework/
+Vendor/opus.xcframework/
+Vendor/sherpa-onnx.xcframework/
+Vendor/**/dSYMs/
