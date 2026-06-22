@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 
 struct HistoryRecord: Codable, Identifiable {
     let date: Date
@@ -9,12 +10,16 @@ struct HistoryRecord: Codable, Identifiable {
     let duration: Double
     let raw: String
     let text: String
+    /// 识别出的主要语言码（zh / en / ja…）；可选，老记录无此字段解码为 nil。
+    var language: String? = nil
+    /// 处理结果状态（如 "ok"）；可选，老记录无此字段解码为 nil。
+    var status: String? = nil
 
     /// 进程内稳定的行标识（用于列表与删除匹配）
     var id: String { "\(date.timeIntervalSince1970)-\(text.hashValue)" }
 
     private enum CodingKeys: String, CodingKey {
-        case date, app, bundleId, duration, raw, text
+        case date, app, bundleId, duration, raw, text, language, status
     }
 }
 
@@ -33,6 +38,30 @@ final class HistoryStore {
     }()
 
     var fileURL: URL { directory.appendingPathComponent("history.jsonl") }
+
+    /// 录音音频留存目录（与 history.jsonl 同级）
+    var audioDirectory: URL { directory.appendingPathComponent("audio", isDirectory: true) }
+
+    /// 某条记录对应的音频文件位置（按时间戳命名，稳定可回找，供控制台回放）
+    func audioURL(for record: HistoryRecord) -> URL {
+        audioDirectory.appendingPathComponent(String(format: "%.3f.wav", record.date.timeIntervalSince1970))
+    }
+
+    /// 追加记录并留存本次录音音频；音频写入失败不影响记录落库。
+    func append(_ record: HistoryRecord, audio: Data) {
+        try? FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+        try? audio.write(to: audioURL(for: record))
+        append(record)
+    }
+
+    /// 粗判文本主要语言，返回 BCP-47 主语言码（zh / en / ja…）；判不出返回 ""
+    static func detectLanguage(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(trimmed)
+        return recognizer.dominantLanguage?.rawValue ?? ""
+    }
 
     func append(_ record: HistoryRecord) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

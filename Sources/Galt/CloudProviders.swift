@@ -83,6 +83,28 @@ struct VolcanoASRModel: Identifiable {
     }
 }
 
+// MARK: - 百炼 ASR 模型（一次性多模态 / 实时流式）
+
+/// 阿里云百炼 ASR 模型预设。`id` 即接口的 model 名：
+/// - `qwen3-asr-flash`：一次性多模态识别（HTTP，当前 `transcribeDashScope` 走此路）；
+/// - `paraformer-realtime-8k-v2`：实时流式识别（WebSocket，8kHz，待接流式链路）。
+struct DashScopeASRModel: Identifiable {
+    let id: String
+    let name: String
+
+    static let presets: [DashScopeASRModel] = [
+        .init(id: "qwen3-asr-flash", name: "Qwen3-ASR-Flash（一次性）"),
+        .init(id: "paraformer-realtime-8k-v2", name: "Paraformer 实时（8k-v2）"),
+    ]
+
+    static var `default`: DashScopeASRModel { presets[0] }
+
+    /// 与给定 id 匹配的预设；无匹配回落到默认
+    static func byId(_ id: String) -> DashScopeASRModel {
+        presets.first { $0.id == id } ?? presets[0]
+    }
+}
+
 /// 润色/翻译/问答使用的 LLM 厂商（全部 OpenAI 兼容 chat/completions）
 struct LLMProviderInfo: Identifiable {
     let id: String
