@@ -1586,9 +1586,18 @@ struct HistoryPage: View {
     @State private var records: [HistoryRecord] = []
     @State private var query = ""
     @State private var filter: Filter = .all
+    /// 记忆化的分组结果：仅在 records / 搜索词 / 过滤项变化时重算，避免每次 body 求值都分组排序
+    @State private var grouped: [(title: String, records: [HistoryRecord])] = []
+    /// 分步加载：当前展示的记录条数上限；滚动到底部自动加大一页
+    @State private var displayLimit = 40
+    /// 是否还有未展示的记录（决定要不要渲染「加载更多」哨兵）
+    @State private var hasMore = false
+    /// 每页加载条数
+    private let pageSize = 40
     /// 「语音输入」快捷键展示文案，随设置变更刷新
     @State private var dictationHint = HotkeyCombo.dictationDisplay
     @AppStorage("historyRetentionDays") private var retentionDays = 0
+    @AppStorage("storeAudioInHistory") private var storeAudio = false
 
     private var retentionLabel: String {
         retentionDays == 0 ? "永远" : "\(retentionDays) 天"
@@ -1600,7 +1609,10 @@ struct HistoryPage: View {
         reload()
     }
 
-    private var filtered: [HistoryRecord] {
+    /// 重算分组（按 records + 搜索 + 过滤），只对「当前展示窗口」(displayLimit) 内的记录分组。
+    /// 分步加载：每次只分组排序一小批，主线程开销恒定且很小；滚动到底再加大窗口。
+    /// 只在 reload / 搜索 / 过滤 / 加载更多时调用，而非每次 body 求值。
+    private func rebuildGroups() {
         let source: [HistoryRecord]
         switch filter {
         case .all, .dictation:
@@ -1608,23 +1620,30 @@ struct HistoryPage: View {
         case .ask:
             source = []
         }
-
-        guard !query.isEmpty else { return source }
-        return source.filter {
-            $0.text.localizedCaseInsensitiveContains(query)
-                || $0.raw.localizedCaseInsensitiveContains(query)
-                || ($0.app ?? "").localizedCaseInsensitiveContains(query)
+        let matched: [HistoryRecord]
+        if query.isEmpty {
+            matched = source
+        } else {
+            matched = source.filter {
+                $0.text.localizedCaseInsensitiveContains(query)
+                    || $0.raw.localizedCaseInsensitiveContains(query)
+                    || ($0.app ?? "").localizedCaseInsensitiveContains(query)
+            }
+        }
+        hasMore = matched.count > displayLimit
+        let visible = matched.count > displayLimit ? Array(matched.prefix(displayLimit)) : matched
+        let calendar = Calendar.current
+        let groups = Dictionary(grouping: visible) { calendar.startOfDay(for: $0.date) }
+        grouped = groups.keys.sorted(by: >).map { day in
+            (historyGroupTitle(for: day), groups[day]?.sorted { $0.date > $1.date } ?? [])
         }
     }
 
-    private var groupedRecords: [(title: String, records: [HistoryRecord])] {
-        let calendar = Calendar.current
-        let groups = Dictionary(grouping: filtered) { record in
-            calendar.startOfDay(for: record.date)
-        }
-        return groups.keys.sorted(by: >).map { day in
-            (historyGroupTitle(for: day), groups[day]?.sorted { $0.date > $1.date } ?? [])
-        }
+    /// 滚动到底部哨兵出现时调用：加大展示窗口一页，重算分组（追加下一批）
+    private func loadMore() {
+        guard hasMore else { return }
+        displayLimit += pageSize
+        rebuildGroups()
     }
 
     var body: some View {
@@ -1659,10 +1678,11 @@ struct HistoryPage: View {
         }
         .background(ConsoleDesign.panelBackground)
         .onAppear {
-            HistoryStore.shared.pruneExpired()
             reload()
             dictationHint = HotkeyCombo.dictationDisplay
         }
+        .onChange(of: query) { _ in displayLimit = pageSize; rebuildGroups() }
+        .onChange(of: filter) { _ in displayLimit = pageSize; rebuildGroups() }
         .onReceive(NotificationCenter.default.publisher(for: .galtHistoryChanged)) { _ in reload() }
         .onReceive(NotificationCenter.default.publisher(for: .galtHotkeysChanged)) { _ in
             dictationHint = HotkeyCombo.dictationDisplay
@@ -1699,6 +1719,19 @@ struct HistoryPage: View {
                     .modifier(HoverBorderBox(idleBorder: Palette.borderDefault))
                 }
                 .buttonStyle(.plain)
+            }
+            .frame(height: 48)
+
+            HStack(alignment: .center, spacing: GaltDesign.Spacing.xl) {
+                historySettingText(
+                    title: "保存音频",
+                    subtitle: "随历史一并在本机保存录音，便于回放与重新转写；占用磁盘，随历史超期一并清理。"
+                )
+                Spacer(minLength: 24)
+                Toggle("", isOn: $storeAudio)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .tint(Palette.primary)
             }
             .frame(height: 48)
 
@@ -1758,7 +1791,7 @@ struct HistoryPage: View {
 
     @ViewBuilder
     private var timeline: some View {
-        if filtered.isEmpty {
+        if grouped.isEmpty {
             VStack(spacing: GaltDesign.Spacing.xs) {
                 Text(emptyTitle)
                     .font(.system(size: 15, weight: .semibold))
@@ -1770,8 +1803,9 @@ struct HistoryPage: View {
             }
             .frame(maxWidth: .infinity, minHeight: 280)
         } else {
-            VStack(alignment: .leading, spacing: GaltDesign.Spacing.lg) {
-                ForEach(groupedRecords, id: \.title) { group in
+            // 惰性渲染：仅滚动到的日期分组才构建行，避免历史很长时切页一次性建完所有行卡顿
+            LazyVStack(alignment: .leading, spacing: GaltDesign.Spacing.lg) {
+                ForEach(grouped, id: \.title) { group in
                     VStack(alignment: .leading, spacing: 11) {
                         Text(group.title)
                             .font(.system(size: 12, weight: .regular))
@@ -1794,6 +1828,14 @@ struct HistoryPage: View {
                         .clipShape(RoundedRectangle(cornerRadius: GaltDesign.Radius.card, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: GaltDesign.Radius.card, style: .continuous).strokeBorder(Palette.borderSubtle, lineWidth: 1))
                     }
+                }
+                // 加载更多哨兵：LazyVStack 下，滚动到它才出现 → 触发加载下一批
+                if hasMore {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, GaltDesign.Spacing.md)
+                        .onAppear { loadMore() }
                 }
             }
         }
@@ -1827,6 +1869,7 @@ struct HistoryPage: View {
 
     private func reload() {
         records = HistoryStore.shared.all()
+        rebuildGroups()
     }
 }
 
@@ -2052,6 +2095,8 @@ struct DictionaryPage: View {
     private let termIconStroke = StrokeStyle(lineWidth: 1.333, lineCap: .round, lineJoin: .round)
     @State private var searchQuery = ""
     @State private var isSearching = false
+    /// learnedTerms 非 @AppStorage 可观测，删词后自增此值强制刷新
+    @State private var learnedRefresh = 0
 
     // Figma 设计令牌
     private let titleColor = Palette.textPrimary
@@ -2068,13 +2113,22 @@ struct DictionaryPage: View {
             .filter { !$0.isEmpty }
     }
 
+    /// 自动学习的词（预览/快照态不取真实数据）
+    private var automaticTerms: [String] {
+        _ = learnedRefresh // 建立刷新依赖
+        return seedTerms == nil ? SettingsStore.shared.learnedTerms : []
+    }
+
     private var filteredTerms: [String] {
         let source: [String]
         switch filter {
-        case .all, .manual:
+        case .all:
+            var seen = Set<String>()
+            source = (terms + automaticTerms).filter { seen.insert($0).inserted }
+        case .manual:
             source = terms
         case .automatic:
-            source = []
+            source = automaticTerms
         }
 
         guard !searchQuery.isEmpty else { return source }
@@ -2279,7 +2333,13 @@ struct DictionaryPage: View {
     }
 
     private func remove(_ term: String) {
-        termsText = terms.filter { $0 != term }.joined(separator: "\n")
+        // 自动学习的词从 learnedTerms 移除；手填词从 termsText 移除
+        if SettingsStore.shared.learnedTerms.contains(term) {
+            SettingsStore.shared.learnedTerms = SettingsStore.shared.learnedTerms.filter { $0 != term }
+            learnedRefresh += 1
+        } else {
+            termsText = terms.filter { $0 != term }.joined(separator: "\n")
+        }
     }
 }
 
