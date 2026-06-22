@@ -50,7 +50,9 @@ enum Tuning {
         static let success: TimeInterval = 3
         /// 「未捕获到语音」轻量反馈停留
         static let empty: TimeInterval = 1.2
-        /// 错误（已复制到剪贴板，可手动 ⌘V）停留
+        /// 取消录音后的轻量反馈停留
+        static let cancelled: TimeInterval = 1.2
+        /// 启动录音失败等不可重试错误停留
         static let error: TimeInterval = 3
         /// 启动录音失败提示停留
         static let startFailure: TimeInterval = 2.5

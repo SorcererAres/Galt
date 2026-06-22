@@ -36,6 +36,8 @@ final class HUDState: ObservableObject {
         }
     }
     @Published var level: Float = 0
+    /// 处理态进度，0...1。由 DictationController 用预测进度驱动，阶段完成时补满。
+    @Published var processingProgress: CGFloat = 0
 
     /// 录音剩余秒数；临近时长上限时由 RecordingPill 呈现 mm:ss 倒计时，nil 表示不显示
     @Published var remainingSeconds: Int?
@@ -54,12 +56,16 @@ final class HUDState: ObservableObject {
         case .recording: return "开始听写"
         case .processing(.transcribing): return "正在转写"
         case .processing(.polishing): return "正在润色"
-        case .success: return "已插入文本"
+        case .success(let text): return Self.displaySuccessText(text)
         case .error(let text): return text
         case .failure(let text): return "\(text)。可点击重试"
         case .empty: return "未捕获到语音"
         case .info(let text): return text
         }
+    }
+
+    static func displaySuccessText(_ text: String) -> String {
+        text.hasPrefix("已") ? text : "已插入文本"
     }
 
     static func postAnnouncement(_ message: String) {
@@ -96,8 +102,6 @@ final class HUDController {
     var onRetryRequested: (() -> Void)?
     /// 用户点击失败态「关闭 ✕」按钮：放弃重试
     var onDismissRequested: (() -> Void)?
-    /// 用户点击成功态「撤销」按钮：删除刚插入的文本（语音编辑则恢复原文）
-    var onUndoRequested: (() -> Void)?
     /// 相位变化对外通知（DictationController 据此按需挂载/卸载 ESC 监听）
     var onPhaseChanged: ((HUDPhase) -> Void)?
 
@@ -117,13 +121,13 @@ final class HUDController {
         }
     }
 
-    /// 在「锁定听写」「成功态（撤销）」「失败态（重试）」时让 HUD 接收鼠标事件——其它阶段点击穿透到下方应用
+    /// 在「锁定听写」「失败态（重试）」时让 HUD 接收鼠标事件——其它阶段点击穿透到下方应用
     private func updateInteractivity(for phase: HUDPhase) {
         guard let panel else { return }
         switch phase {
         case .recording(let locked, _, _) where locked:
             panel.ignoresMouseEvents = false
-        case .success, .failure:
+        case .failure:
             panel.ignoresMouseEvents = false
         default:
             panel.ignoresMouseEvents = true
@@ -215,8 +219,7 @@ final class HUDController {
             onStop: { [weak self] in self?.onStopRequested?() },
             onCancel: { [weak self] in self?.onCancelRequested?() },
             onRetry: { [weak self] in self?.onRetryRequested?() },
-            onDismiss: { [weak self] in self?.onDismissRequested?() },
-            onUndo: { [weak self] in self?.onUndoRequested?() }
+            onDismiss: { [weak self] in self?.onDismissRequested?() }
         ))
         panel.contentView = hosting
         hostingView = hosting
@@ -260,8 +263,12 @@ final class HUDController {
 
 /// HUD 浮层统一深色样式（恒为浮层深色控件，不随系统亮暗变化，对齐 Figma 录音胶囊）
 private enum HUDStyle {
-    static let fill = Color(hex: 0x1B1B1B)
-    static let stroke = Color(hex: 0x2D2D2D)
+    static let fill = Color.black
+    static let elevatedFill = Color(hex: 0x2A292D)
+    static let secondaryText = Color(hex: 0x9A9A9A)
+    static let iconText = Color(hex: 0xC8C8C8)
+    static let stopRed = Color(hex: 0xFA3532)
+    static let shadow = Color.black.opacity(0.25)
 }
 
 /// 系统材质背景（毛玻璃，blendingMode 取窗口后方内容）
@@ -283,7 +290,6 @@ struct HUDView: View {
     var onCancel: () -> Void = {}
     var onRetry: () -> Void = {}
     var onDismiss: () -> Void = {}
-    var onUndo: () -> Void = {}
 
     var body: some View {
         // 面板尺寸由 HUDController 在 phase 变化时用 fittingSize 量定（见 measuredContentSize）。
@@ -319,14 +325,14 @@ struct HUDView: View {
         }
     }
 
-    /// 录音态使用独立的深色胶囊（对齐 Figma），其余态沿用系统材质胶囊
+    /// 录音态使用独立的深色胶囊（对齐 Figma），其余状态走各自的 36pt 深色状态胶囊
     @ViewBuilder
     private var phaseView: some View {
         switch state.phase {
         case .idle:
             EmptyView()
-        case .starting(let mode):
-            StartingPill(mode: mode)
+        case .starting:
+            StartingPill()
         case .recording(let locked, let editing, let mode):
             RecordingPill(
                 level: state.level,
@@ -338,7 +344,8 @@ struct HUDView: View {
                 onCancel: onCancel
             )
         case .success(let text):
-            SuccessCapsule(text: text, onUndo: onUndo)
+            let displayText = HUDState.displaySuccessText(text)
+            MessageCapsule(icon: successIcon(for: displayText), text: displayText)
         case .failure(let message):
             FailureCapsule(message: message, onRetry: onRetry, onDismiss: onDismiss)
         default:
@@ -346,53 +353,37 @@ struct HUDView: View {
         }
     }
 
-    /// 处理 / 成功 / 错误 / 空结果——统一深色浮层胶囊（与录音态同底）
+    /// 处理 / 错误 / 空结果 / 信息——统一深色状态胶囊
     /// 强制 .dark 环境：ProgressView、.secondary 文字、Palette 语义色在深底自动取浅色值
     @ViewBuilder
     private var statusCapsule: some View {
-        statusContent
-            .font(.system(size: 13, weight: .medium))
-            .padding(.horizontal, 18)
-            .padding(.vertical, 11)
-            .background(HUDStyle.fill)
-            .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(HUDStyle.stroke, lineWidth: 1))
-            .environment(\.colorScheme, .dark)
-    }
-
-    @ViewBuilder
-    private var statusContent: some View {
         switch state.phase {
         case .processing(let stage):
-            HStack(spacing: 10) {
-                ProgressView().controlSize(.small)
-                Text(stage == .transcribing ? "正在转写…" : "正在润色…").foregroundStyle(.secondary)
-            }
+            ProcessingPill(
+                text: stage == .transcribing ? "转写中…" : "润色中…",
+                progress: state.processingProgress
+            )
         case .error(let message):
-            HStack(spacing: GaltDesign.Spacing.sm) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Palette.warning)
-                Text(message).lineLimit(2).frame(maxWidth: 400)
-            }
+            MessageCapsule(icon: "exclamationmark.triangle", text: message, iconColor: Palette.warning)
         case .empty:
-            HStack(spacing: GaltDesign.Spacing.sm) {
-                Image(systemName: "mic.slash.fill")
-                    .foregroundStyle(.secondary)
-                Text("未捕获到语音").foregroundStyle(.secondary)
-            }
+            MessageCapsule(icon: "mic.slash", text: "未捕获到语音")
         case .info(let message):
-            HStack(spacing: GaltDesign.Spacing.sm) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Palette.success)
-                Text(message).lineLimit(2).frame(maxWidth: 400)
-            }
+            MessageCapsule(icon: "sparkles", text: message)
         default:
             EmptyView()
         }
     }
+
+    private func successIcon(for text: String) -> String {
+        switch text {
+        case "已复制到剪贴板": return "doc.on.doc"
+        case "已取消": return "xmark.square"
+        default: return "text.cursor"
+        }
+    }
 }
 
-/// 正在录音的深色胶囊：红点 + 实时声波 + 取消（✕）/ 确认（✓）按钮（对齐 Figma 690:594）
+/// 正在录音的深色胶囊：红点 + 实时声波 + 取消（✕）/ 停止按钮（对齐 Figma 690:594）
 private struct RecordingPill: View {
     var level: Float
     var locked: Bool
@@ -406,7 +397,7 @@ private struct RecordingPill: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: GaltDesign.Spacing.xxs) {
+        HStack(spacing: GaltDesign.Spacing.sm) {
             // 红点跟随音量轻微膨胀 + 弱光晕，作为整体「活气」的视觉锚点
             ZStack {
                 Circle()
@@ -421,7 +412,7 @@ private struct RecordingPill: View {
             }
             .frame(width: 8, height: 8)
             .animation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.62), value: level)
-            LevelBars(level: level, tint: Color(hex: 0xEAEAEA))
+            LevelBars(level: level, tint: Color(hex: 0xFFFEFD))
             if let countdown {
                 Text(countdown)
                     .font(.system(size: 12, weight: .semibold).monospacedDigit())
@@ -430,28 +421,22 @@ private struct RecordingPill: View {
             }
             PillCircleButton(
                 systemName: "xmark",
-                background: Color(hex: 0x3A3635),
+                background: HUDStyle.elevatedFill,
                 foreground: Color(hex: 0xEAEAEA),
-                border: Color(hex: 0x696564),
+                border: nil,
                 action: onCancel
             )
             .help("取消听写")
             .accessibilityLabel("取消听写")
-            PillCircleButton(
-                systemName: "checkmark",
-                background: Color(hex: 0xEAEAEA),
-                foreground: Color(hex: 0x1B1B1B),
-                border: nil,
-                action: onStop
-            )
+            PillStopButton(action: onStop)
             .help("完成听写")
             .accessibilityLabel("完成听写")
         }
-        .padding(.horizontal, GaltDesign.Spacing.sm)
+        .padding(.horizontal, 10)
         .frame(height: 36)
         .background(HUDStyle.fill)
         .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(HUDStyle.stroke, lineWidth: 1))
+        .shadow(color: HUDStyle.shadow, radius: 6.8, x: 0, y: 3.4)
         // 非锁定（按住说话）时只读展示：鼠标事件由 HUDController 在锁定时才放行
         .accessibilityElement(children: .contain)
     }
@@ -480,100 +465,73 @@ private struct RecordingPill: View {
     }
 }
 
-/// 唤醒麦克风过渡胶囊：与录音态同底深色，内部一道左右扫光表示「正在准备」
-/// （对齐 Typeless 的 loadingMove）。尊重减弱动态效果时退化为静态三点。
+/// 唤醒麦克风过渡胶囊（Figma 738:931）
 private struct StartingPill: View {
-    var mode: DictationMode
-
-    @State private var animating = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private static let trackWidth: CGFloat = 96
-
     var body: some View {
-        ZStack {
-            // 与 LevelBars 等宽的轨道，避免唤醒→录音切换时胶囊宽度跳变
-            Capsule()
-                .fill(Color(hex: 0x3A3635))
-                .frame(width: Self.trackWidth, height: 4)
-            if reduceMotion {
-                HStack(spacing: 6) {
-                    ForEach(0..<3, id: \.self) { _ in
-                        Circle().fill(sweepColor).frame(width: 5, height: 5)
-                    }
-                }
-            } else {
-                Capsule()
-                    .fill(sweepColor)
-                    .frame(width: 26, height: 4)
-                    .offset(x: animating ? (Self.trackWidth - 26) / 2 : -(Self.trackWidth - 26) / 2)
-                    .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: animating)
-            }
-        }
-        .frame(width: Self.trackWidth, height: 36)
-        .padding(.horizontal, GaltDesign.Spacing.sm)
+        Text("等待麦克风…")
+            .font(.system(size: 12, weight: .regular))
+            .foregroundStyle(HUDStyle.secondaryText)
+            .padding(.leading, 12)
+            .frame(width: 96, height: 36, alignment: .leading)
         .background(HUDStyle.fill)
         .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(HUDStyle.stroke, lineWidth: 1))
-        .onAppear { animating = true }
+        .shadow(color: HUDStyle.shadow, radius: 6.8, x: 0, y: 3.4)
         .accessibilityElement()
         .accessibilityLabel("正在唤醒麦克风")
     }
-
-    /// 扫光颜色按模式取色，与录音态红点/青/蓝呼应；默认听写用近白以保证对比
-    private var sweepColor: Color {
-        switch mode {
-        case .dictation: return Color(hex: 0xEAEAEA)
-        case .translate: return .teal
-        case .ask: return .blue
-        }
-    }
 }
 
-/// 浅底深字的小胶囊文字按钮（失败态「重试」、成功态「撤销」共用）
-private struct PillTextButton: View {
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color(hex: 0x1B1B1B))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(Color(hex: 0xEAEAEA))
-                .clipShape(Capsule())
-                .contentShape(Capsule())
-        }
-        .buttonStyle(PressableButtonStyle())
-    }
-}
-
-/// 成功胶囊：对勾 + 成稿预览 + 「撤销」按钮（短暂可交互，过后自动淡出）
-private struct SuccessCapsule: View {
+private struct ProcessingPill: View {
     let text: String
-    let onUndo: () -> Void
+    let progress: CGFloat
+
+    private var clampedProgress: CGFloat {
+        min(1, max(0, progress))
+    }
 
     var body: some View {
-        HStack(spacing: GaltDesign.Spacing.sm) {
-            SuccessIcon()
+        Text(text)
+            .font(.system(size: 12, weight: .regular))
+            .foregroundStyle(HUDStyle.secondaryText)
+            .padding(.leading, 12)
+            .frame(width: 96, height: 36, alignment: .leading)
+            .background(alignment: .leading) {
+                Rectangle()
+                    .fill(HUDStyle.elevatedFill)
+                    .frame(width: 96 * clampedProgress, height: 36)
+            }
+            .background(HUDStyle.fill)
+            .clipShape(Capsule())
+            .shadow(color: HUDStyle.shadow, radius: 6.8, x: 0, y: 3.4)
+            .animation(.linear(duration: 0.08), value: clampedProgress)
+    }
+}
+
+private struct MessageCapsule: View {
+    let icon: String
+    let text: String
+    var iconColor: Color = HUDStyle.iconText
+
+    var body: some View {
+        HStack(spacing: GaltDesign.Spacing.xxs) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(iconColor)
+                .frame(width: 24, height: 24)
             Text(text)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(HUDStyle.secondaryText)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: 320)
-            PillTextButton(title: "撤销", action: onUndo)
-                .help("删除刚插入的文本")
-                .accessibilityLabel("撤销插入")
+                .frame(maxWidth: 360, alignment: .leading)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
+        .padding(.leading, 10)
+        .padding(.trailing, 12)
+        .frame(height: 36)
         .background(HUDStyle.fill)
         .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(HUDStyle.stroke, lineWidth: 1))
+        .shadow(color: HUDStyle.shadow, radius: 6.8, x: 0, y: 3.4)
         .environment(\.colorScheme, .dark)
-        .accessibilityElement(children: .contain)
     }
 }
 
@@ -585,30 +543,41 @@ private struct FailureCapsule: View {
 
     var body: some View {
         HStack(spacing: GaltDesign.Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle.fill")
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(Palette.warning)
+                .frame(width: 24, height: 24)
             Text(message)
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(2)
-                .frame(maxWidth: 280)
-            PillTextButton(title: "重试", action: onRetry)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(HUDStyle.secondaryText)
+                .lineLimit(1)
+                .frame(maxWidth: 280, alignment: .leading)
+            Button(action: onRetry) {
+                Text("重试")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(HUDStyle.stopRed)
+                    .frame(width: 40, height: 24)
+                    .background(Color(hex: 0x1D1011))
+                    .clipShape(Capsule())
+            }
+                .buttonStyle(PressableButtonStyle())
                 .help("用刚才的录音重试")
                 .accessibilityLabel("重试")
             PillCircleButton(
                 systemName: "xmark",
-                background: Color(hex: 0x3A3635),
+                background: Color(hex: 0x2C2C2D),
                 foreground: Color(hex: 0xEAEAEA),
-                border: Color(hex: 0x696564),
+                border: nil,
                 action: onDismiss
             )
             .help("关闭")
             .accessibilityLabel("关闭")
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
+        .padding(.horizontal, GaltDesign.Spacing.sm)
+        .frame(height: 36)
         .background(HUDStyle.fill)
         .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(HUDStyle.stroke, lineWidth: 1))
+        .shadow(color: HUDStyle.shadow, radius: 6.8, x: 0, y: 3.4)
         .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
     }
@@ -643,112 +612,258 @@ private struct PillCircleButton: View {
     }
 }
 
-/// 成功对勾：完成瞬间轻量弹入，强化「已出字」的确认感（尊重减弱动态效果）
-private struct SuccessIcon: View {
-    @State private var shown = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+private struct PillStopButton: View {
+    let action: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        Image(systemName: "checkmark.circle.fill")
-            .foregroundStyle(Palette.success)
-            .scaleEffect(shown || reduceMotion ? 1 : 0.5)
-            .opacity(shown || reduceMotion ? 1 : 0)
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.56)) { shown = true }
+        Button(action: action) {
+            ZStack {
+                Circle().strokeBorder(Color.white, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(HUDStyle.stopRed)
+                    .frame(width: 10, height: 10)
             }
+            .frame(width: 24, height: 24)
+            .opacity(hovering ? 0.82 : 1)
+            .contentShape(Circle())
+        }
+        .buttonStyle(PressableButtonStyle())
+        .onHover { hovering = $0 }
     }
 }
 
-/// 实时录音声波：借鉴 Typeless 的「中心扩散」等化器——音量脉冲在中心附近注入，
-/// 向两侧逐格荡开并随机老化衰减，配自适应噪声底，读作有机的呼吸波而非左滚动条。
-/// 默认尺寸对齐 Figma 录音胶垫（96×36），`tint` 控制条色（深底用浅色）。
+/// 实时录音声波：复刻 Typeless floating-bar 的中心扩散模型，并适配 96px 宽 HUD 区域。
+/// 24 根柱使用 2px 宽 + 2px gap，总宽 94px，左右各留 1px。
+/// 音量先在中心附近触发，再带微随机延迟向两侧扩散，旧柱按 age 衰减回 2px。
 struct LevelBars: View {
     var level: Float
     var tint: Color = .secondary
 
-    /// 可调参数集中于此，便于实机调手感
     private enum K {
-        static let count = 24                       // 竖条数（宽 96 / (2+2)）
-        static let minH: CGFloat = 3                // 最小（静止）高度
-        static let maxH: CGFloat = 24               // 满音量高度
+        static let count = 24
+        static let barW: CGFloat = 2
+        static let gap: CGFloat = 2
+        static let minH: CGFloat = 2
+        static let maxH: CGFloat = 18
         static let frameW: CGFloat = 96
-        static let frameH: CGFloat = 36
-        // 中心扩散
-        static let propagate: CGFloat = 0.45        // 每帧向外传播的混合比例
-        static let propDecay: CGFloat = 0.86        // 传播时的衰减
-        static let selfDecay: ClosedRange<CGFloat> = 0.90...0.97 // 每条独立随机老化
-        static let centerJitter = 2                 // 注入点相对中心的随机偏移
-        // 触发 / 响应
-        static let trigger: Float = 0.04            // 减底噪后超过此值才注入脉冲
-        static let exponent: Float = 0.5            // 响应曲线（抬高小值）
-        static let idleShimmer: Float = 0.06        // 静默时偶发微动的概率
-        // 自适应噪声底（随环境跟随）
-        static let floorFast: Float = 0.06          // 安静时快速下移
-        static let floorSlow: Float = 0.002         // 有声时缓慢上移
-        static let floorMargin: Float = 0.01
-        static let floorMax: Float = 0.35
-        static let visualMargin: Float = 0.006
+        static let frameH: CGFloat = 24
+        static let updateInterval: TimeInterval = 0.05
+        static let diffusionDelay: TimeInterval = 0.08
+        static let triggerThreshold: CGFloat = 0.07
+        static let maxTriggerProbability: CGFloat = 0.8
+        static let centerOffsetRatio: CGFloat = 0.15
+        static let maxCenterOffset: CGFloat = 3
+        static let decayBase: CGFloat = 0.65
+        static let decayRandom: CGFloat = 0.08
+        static let minDecay: CGFloat = 0.12
+        static let blending: ClosedRange<CGFloat> = 0.65...0.75
+        static let randomDelay: TimeInterval = 0.015
+        static let minEffectiveDecay: CGFloat = 0.95
+        static let positionFactor: CGFloat = 0.3
     }
 
-    @State private var vols = [CGFloat](repeating: K.minH, count: K.count)
-    @State private var floor: Float = 0
+    private struct Bar: Equatable {
+        var volume: CGFloat = K.minH
+        var age: Int = 0
+        var recording: Bool = false
+    }
+
+    private struct Pulse: Equatable {
+        let volume: CGFloat
+        let timestamp: TimeInterval
+    }
+
+    private struct ScheduledUpdate: Equatable {
+        let index: Int
+        let volume: CGFloat
+        let timestamp: TimeInterval
+    }
+
+    @State private var bars = Array(repeating: Bar(), count: K.count)
+    @State private var pendingPulses: [Pulse] = []
+    @State private var scheduledUpdates: [ScheduledUpdate] = []
+    @State private var smoothedVolume: CGFloat = K.minH
+    @State private var lastTick: TimeInterval = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // 时钟每帧驱动一次扩散步进；减弱动态效果时暂停（静态最小条）
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
-            HStack(spacing: GaltDesign.Spacing.xxxs) {
-                ForEach(0..<K.count, id: \.self) { i in
-                    Capsule()
-                        .fill(tint)
-                        .frame(width: 2, height: vols[i])
-                        .opacity(0.4 + Double((vols[i] - K.minH) / (K.maxH - K.minH)) * 0.6)
-                }
+        if reduceMotion {
+            barStack(staticBars)
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { context in
+                barStack(bars)
+                    .onAppear { resetIfNeeded() }
+                    .onChange(of: context.date) { _, date in step(at: date) }
             }
-            .frame(width: K.frameW, height: K.frameH)
-            .onChange(of: context.date) { _, _ in step() }
         }
     }
 
-    /// 一帧扩散步进：自适应底噪 → 中心向两侧传播 → 独立老化 → 触发新脉冲
-    private func step() {
-        // 自适应噪声底：安静时快速跟随、有声时缓慢上移，只显示「超过环境噪声」的部分
-        let f: Float = level <= floor + K.floorMargin ? K.floorFast : K.floorSlow
-        floor = min(K.floorMax, max(0, floor * (1 - f) + level * f))
-        let norm = max(0, level - floor - K.visualMargin)
+    private var staticBars: [Bar] {
+        let raw = max(0, min(1, CGFloat(level)))
+        let h = K.minH + (K.maxH - K.minH) * raw
+        return Array(repeating: Bar(volume: h, age: 0, recording: raw > 0.04), count: K.count)
+    }
 
-        let half = K.count / 2
-        var next = vols
+    private func barStack(_ source: [Bar]) -> some View {
+        HStack(spacing: K.gap) {
+            ForEach(0..<K.count, id: \.self) { i in
+                let bar = i < source.count ? source[i] : Bar()
+                Capsule()
+                    .fill(bar.recording ? tint : Color(hex: 0x808080))
+                    .frame(width: K.barW, height: max(K.minH, min(K.maxH, bar.volume)))
+                    .opacity(bar.recording ? 1 : 0.5)
+            }
+        }
+        .frame(width: K.frameW, height: K.frameH)
+    }
 
-        // ① 中心向两侧传播：每条吸收靠中心一侧邻居的衰减值，形成由内向外的流动
-        for i in 0..<K.count {
-            let inner = i < half ? min(i + 1, K.count - 1) : max(i - 1, 0)
-            let propagated = vols[inner] * K.propDecay * CGFloat.random(in: 0.9...1.1)
-            next[i] = max(K.minH, vols[i] * (1 - K.propagate) + propagated * K.propagate)
-        }
-        // ② 每条独立随机老化衰减——避免等高死板
-        for i in 0..<K.count {
-            next[i] = max(K.minH, next[i] * CGFloat.random(in: K.selfDecay))
-        }
-        // ③ 触发：音量过阈值则按概率在中心附近注入新脉冲；静默时偶发极小微动保持「活气」
-        if norm > K.trigger, Float.random(in: 0...1) < min(0.85, norm * 4) {
-            let c = clampIndex(half + Int.random(in: -K.centerJitter...K.centerJitter))
-            let shaped = pow(min(1, norm), K.exponent)
-            let target = K.minH + (K.maxH - K.minH) * CGFloat(shaped) * CGFloat.random(in: 0.9...1.1)
-            next[c] = max(next[c], min(K.maxH, target))
-        } else if norm <= K.trigger, Float.random(in: 0...1) < K.idleShimmer {
-            let c = clampIndex(half + Int.random(in: -1...1))
-            next[c] = max(next[c], K.minH + (K.maxH - K.minH) * CGFloat.random(in: 0.05...0.14))
-        }
+    private func resetIfNeeded() {
+        guard bars.count != K.count else { return }
+        bars = Array(repeating: Bar(), count: K.count)
+        pendingPulses.removeAll()
+        scheduledUpdates.removeAll()
+        smoothedVolume = K.minH
+        lastTick = 0
+    }
 
-        // 每条高度用 80ms 缓动过渡（对齐 Typeless 的 transition），跳变被磨平
-        withAnimation(.easeOut(duration: 0.08)) {
-            vols = next
+    private func step(at date: Date) {
+        let now = date.timeIntervalSinceReferenceDate
+        processScheduledUpdates(at: now)
+        guard now - lastTick >= K.updateInterval else { return }
+        lastTick = now
+
+        let input = shapedLevel()
+        let target = K.minH + (K.maxH - K.minH) * input
+        smoothedVolume = smoothedVolume * 0.15 + target * 0.85
+
+        if shouldTriggerPulse(input: input) {
+            pendingPulses.append(Pulse(volume: jittered(smoothedVolume, range: 0.9...1.1), timestamp: now))
+        }
+        processPendingPulses(at: now)
+        decayBars()
+    }
+
+    private func shapedLevel() -> CGFloat {
+        let raw = max(0, min(1, CGFloat(level)))
+        switch raw {
+        case ..<0.03:
+            return min(1, 0.12 + raw / 0.03 * 0.18 + CGFloat.random(in: 0...0.03))
+        case ..<0.1:
+            let t = (raw - 0.03) / 0.07
+            return max(0.31, min(0.79, 0.36 + t * 0.42 + CGFloat.random(in: -0.1...0.1)))
+        default:
+            let t = min(1, (raw - 0.1) / 0.9)
+            var boosted = pow(t, 0.25)
+            boosted = max(0, min(1, boosted + CGFloat.random(in: -0.25...0.25) * max(0.15, 0.25 * t)))
+            if t > 0.4 {
+                boosted = min(1, boosted * CGFloat.random(in: 1.2...1.6))
+            }
+            return max(0.45, min(1, 0.55 + 0.4 * boosted + CGFloat.random(in: -0.1...0.1)))
         }
     }
 
-    private func clampIndex(_ i: Int) -> Int {
-        min(max(i, 0), K.count - 1)
+    private func shouldTriggerPulse(input: CGFloat) -> Bool {
+        guard input > K.triggerThreshold else { return false }
+        let probability = min(K.maxTriggerProbability, input * 2)
+        return CGFloat.random(in: 0...1) < probability
+    }
+
+    private func processPendingPulses(at now: TimeInterval) {
+        while let pulse = pendingPulses.first, now - pulse.timestamp >= K.diffusionDelay {
+            pendingPulses.removeFirst()
+            applyPulse(pulse, at: now)
+        }
+    }
+
+    private func applyPulse(_ pulse: Pulse, at now: TimeInterval) {
+        let center = K.count / 2
+        let maxOffset = min(CGFloat(K.count) * K.centerOffsetRatio, K.maxCenterOffset)
+        let offset = Int((CGFloat.random(in: -0.5...0.5) * maxOffset).rounded(.down))
+        let centerIndex = max(0, min(K.count - 1, center + offset))
+        bars[centerIndex] = Bar(volume: jittered(pulse.volume, range: 0.95...1.05), age: 0, recording: true)
+
+        let leftDistance = centerIndex
+        let rightDistance = K.count - 1 - centerIndex
+        let maxDistance = max(leftDistance, rightDistance)
+        guard maxDistance > 0 else { return }
+
+        for distance in 1...maxDistance {
+            let leftIndex = centerIndex - distance
+            let rightIndex = centerIndex + distance
+            let leftDecay = max(
+                K.minDecay,
+                1 - CGFloat(distance) / CGFloat(max(leftDistance, 1)) * (K.decayBase + CGFloat.random(in: 0...K.decayRandom))
+            )
+            let rightDecay = max(
+                K.minDecay,
+                1 - CGFloat(distance) / CGFloat(max(rightDistance, 1)) * (K.decayBase + CGFloat.random(in: 0...K.decayRandom))
+            )
+            let leftVolume = max(K.minH, jittered(pulse.volume * leftDecay, range: 0.9...1.1))
+            let rightVolume = max(K.minH, jittered(pulse.volume * rightDecay, range: 0.9...1.1))
+            let baseDelay = Double(distance) * K.diffusionDelay * Double(CGFloat.random(in: 0.15...0.2))
+            if leftIndex >= 0 {
+                scheduledUpdates.append(ScheduledUpdate(
+                    index: leftIndex,
+                    volume: leftVolume,
+                    timestamp: now + baseDelay + Double.random(in: 0...K.randomDelay)
+                ))
+            }
+            if rightIndex < K.count {
+                scheduledUpdates.append(ScheduledUpdate(
+                    index: rightIndex,
+                    volume: rightVolume,
+                    timestamp: now + baseDelay + Double.random(in: 0...K.randomDelay)
+                ))
+            }
+        }
+    }
+
+    private func processScheduledUpdates(at now: TimeInterval) {
+        guard !scheduledUpdates.isEmpty else { return }
+        var remaining: [ScheduledUpdate] = []
+        for update in scheduledUpdates {
+            guard update.timestamp <= now else {
+                remaining.append(update)
+                continue
+            }
+            guard bars.indices.contains(update.index) else { continue }
+            let blend = CGFloat.random(in: K.blending)
+            let current = bars[update.index].volume
+            let volume = max(update.volume, current * (1 - blend) + update.volume * blend)
+            bars[update.index] = Bar(volume: volume, age: Int.random(in: 0...1), recording: true)
+        }
+        scheduledUpdates = remaining
+    }
+
+    private func decayBars() {
+        let center = K.count / 2
+        for index in bars.indices where bars[index].recording {
+            let ageStep: Int
+            let roll = CGFloat.random(in: 0...1)
+            if roll > 0.95 {
+                ageStep = 0
+            } else if roll > 0.7 {
+                ageStep = 2
+            } else {
+                ageStep = 1
+            }
+            let nextAge = bars[index].age + ageStep
+            let maxAge = 50 + Int.random(in: 0..<15)
+            let baseDecay = CGFloat.random(in: 0.98...0.995)
+            let positionScale = 1 + abs(CGFloat(index - center)) / CGFloat(K.count) * K.positionFactor
+            let effectiveDecay = max(K.minEffectiveDecay, baseDecay / positionScale)
+            let decayed = bars[index].volume * pow(effectiveDecay, CGFloat(nextAge) / 12)
+            let volume = max(K.minH, jittered(decayed, range: 0.95...1.05))
+            if nextAge > maxAge || volume <= K.minH + 0.2 {
+                bars[index] = Bar()
+            } else {
+                bars[index] = Bar(volume: volume, age: nextAge, recording: true)
+            }
+        }
+    }
+
+    private func jittered(_ value: CGFloat, range: ClosedRange<CGFloat>) -> CGFloat {
+        max(K.minH, min(K.maxH, value * CGFloat.random(in: range)))
     }
 }

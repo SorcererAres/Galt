@@ -86,6 +86,8 @@ final class DictationController {
     private var currentJob: Task<Void, Never>?
     /// 当前在途任务的「回滚已键入半成品」闭包（ESC 中断时调用）
     private var currentRollback: (() -> Void)?
+    /// HUD 处理态预测进度计时器：推进到 96%，真实阶段完成时再补满到 100%
+    private var processingProgressTimer: Timer?
 
     /// 录音活动状态变化（true=正在采集）；用于驱动菜单栏图标等外部指示
     var onActiveChange: ((Bool) -> Void)?
@@ -117,10 +119,6 @@ final class DictationController {
         }
         hud.onDismissRequested = { [weak self] in
             self?.dismissFailure()
-        }
-        // 成功态「撤销」：删除刚插入的文本
-        hud.onUndoRequested = { [weak self] in
-            self?.undo()
         }
         // ESC：录音中等同取消、处理中中断任务并回滚半成品（按相位分流）
         escMonitor.onEsc = { [weak self] in self?.handleEsc() }
@@ -369,6 +367,7 @@ final class DictationController {
         currentJob = nil
         currentRollback?()
         currentRollback = nil
+        stopProcessingProgress(reset: true)
         lastFailedJob = nil
         AudioDucker.shared.restore()
         clearHint()
@@ -393,7 +392,9 @@ final class DictationController {
         if SettingsStore.shared.soundFeedback {
             NSSound(named: "Tink")?.play()
         }
-        hud.hide()
+        hud.state.phase = .success("已取消")
+        hud.show()
+        hud.hide(after: Tuning.HUDDismiss.cancelled)
     }
 
     private func finishDictation() {
@@ -416,6 +417,7 @@ final class DictationController {
         guard let wav else {
             // 录音过短或无声：给一次轻量反馈再淡出，避免用户以为热键失效
             hud.state.phase = .empty
+            hud.show()
             hud.hide(after: Tuning.HUDDismiss.empty)
             return
         }
@@ -454,14 +456,14 @@ final class DictationController {
     /// 上次失败、可重试的任务；nil 表示当前无可重试项
     private var lastFailedJob: PendingJob?
 
-    /// 一次成功插入的最小信息，供成功态「撤销」回退
+    /// 一次成功插入的最小信息，保留给撤销逻辑回退
     private struct LastInsertion {
         let charCount: Int              // 已插入的字符数（退格回退用）
         let appPID: pid_t?              // 插入时的前台 App，撤销前比对，切走则放弃
         let replacedSelection: String?  // 语音编辑被替换掉的原文；撤销后重新键回
     }
 
-    /// 最近一次成功插入；nil 表示无可撤销项
+    /// 最近一次成功插入；nil 表示无可回退项
     private var lastInsertion: LastInsertion?
 
     /// 用户点击 HUD 失败态的「重试」：用保留的音频重走转写→润色→出字
@@ -474,10 +476,11 @@ final class DictationController {
     /// 用户点击失败态的「关闭」：放弃重试并收起 HUD
     func dismissFailure() {
         lastFailedJob = nil
+        stopProcessingProgress(reset: true)
         hud.hide()
     }
 
-    /// 用户点击成功态「撤销」：删除刚插入的文本；语音编辑则把被替换的原文键回。
+    /// 删除刚插入的文本；语音编辑则把被替换的原文键回。
     /// 仅在焦点仍停在插入时那个 App 才动手，避免删到别处。
     func undo() {
         defer { hud.hide() }
@@ -497,7 +500,10 @@ final class DictationController {
     /// 失败时保留 job 并切到可重试的失败态。
     private func runJob(_ job: PendingJob) {
         hud.cancelScheduledHide() // 取消失败态排期的自动淡出（重试场景）
+        hud.state.processingProgress = 0
         hud.state.phase = .processing(.transcribing)
+        startProcessingProgress(estimatedDuration: estimatedTranscriptionDuration(for: job))
+        hud.show()
 
         // 新任务代际：ESC 中断时自增此值，使在途任务的回调失效
         jobGen += 1
@@ -515,15 +521,20 @@ final class DictationController {
                 let rawHasContent = !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 // 转写完成、进入 LLM 阶段前切换文案；纯听写（无润色）则保持「正在转写」直到出字
                 if job.usesLLM {
+                    await self.finishProcessingProgress()
                     await MainActor.run {
                         guard gen == self.jobGen else { return }
+                        guard !(useCard && rawHasContent) else { return }
+                        self.hud.state.processingProgress = 0
                         self.hud.state.phase = .processing(.polishing)
+                        self.startProcessingProgress(estimatedDuration: self.estimatedPolishingDuration(for: raw))
                     }
                 }
                 // ask 模式：转写有内容即开卡片、收起 HUD，答案流式填进卡片
                 if useCard && rawHasContent {
                     await MainActor.run {
                         guard gen == self.jobGen else { return }
+                        self.stopProcessingProgress(reset: true)
                         self.hud.hide()
                         ResultCardController.shared.begin(title: "回答")
                     }
@@ -538,19 +549,23 @@ final class DictationController {
                     raw, mode: job.mode, selection: job.selection,
                     appName: job.appName, bundleId: job.bundleId, onDelta: onDelta
                 )
+                if !useCard || !rawHasContent {
+                    await self.finishProcessingProgress()
+                }
                 await MainActor.run {
                     // 已被 ESC 中断（代际失效）：不改 HUD、不注入、不记历史
                     guard gen == self.jobGen else { return }
                     self.currentJob = nil
                     self.currentRollback = nil
                     self.lastFailedJob = nil
-                    // ask 模式：结果落在卡片，不注入光标、不记 lastInsertion（无可撤销项）
+                    // ask 模式：结果落在卡片，不注入光标、不记 lastInsertion（无可回退项）
                     if useCard {
                         self.lastInsertion = nil
                         if final.isEmpty {
                             ResultCardController.shared.close()
                             self.hud.state.phase = .empty
-                            self.hud.hide(after: 1.2)
+                            self.hud.show()
+                            self.hud.hide(after: Tuning.HUDDismiss.empty)
                         } else {
                             ResultCardController.shared.finish(final)
                             HistoryStore.shared.append(HistoryRecord(
@@ -565,7 +580,8 @@ final class DictationController {
                     if final.isEmpty {
                         self.lastInsertion = nil
                         self.hud.state.phase = .empty
-                        self.hud.hide(after: 1.2)
+                        self.hud.show()
+                        self.hud.hide(after: Tuning.HUDDismiss.empty)
                         return
                     }
                     // 已逐字键入（CGEvent 直接键入，不经剪贴板）则无需再注入，且保持用户剪贴板不被污染
@@ -584,7 +600,7 @@ final class DictationController {
                         language: HistoryStore.detectLanguage(final), status: "ok"
                     ), audio: job.wav)
                     if pasted {
-                        // 记录本次插入，供成功态「撤销」（焦点守卫用出字时刻的前台 App）
+                        // 记录本次插入上下文（焦点守卫用出字时刻的前台 App）
                         self.lastInsertion = LastInsertion(
                             charCount: insertedCount,
                             appPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
@@ -596,12 +612,12 @@ final class DictationController {
                         DispatchQueue.main.asyncAfter(deadline: .now() + Tuning.snapshotDelay) {
                             self.editLearner.snapshot(inserted: inserted)
                         }
-                        self.hud.state.phase = .success(final)
+                        self.hud.state.phase = .success("已插入文本")
                         self.hud.hide(after: Tuning.HUDDismiss.success)
                     } else {
                         self.lastInsertion = nil
-                        self.hud.state.phase = .error("已复制到剪贴板，可手动 ⌘V")
-                        self.hud.hide(after: Tuning.HUDDismiss.error)
+                        self.hud.state.phase = .success("已复制到剪贴板")
+                        self.hud.hide(after: Tuning.HUDDismiss.success)
                     }
                 }
             } catch {
@@ -611,6 +627,7 @@ final class DictationController {
                     guard gen == self.jobGen else { return }
                     self.currentJob = nil
                     self.currentRollback = nil
+                    self.stopProcessingProgress(reset: true)
                     // ask 模式失败：收起卡片，错误仍走 HUD 失败态（可重试）
                     if useCard { ResultCardController.shared.close() }
                     // 仅在焦点仍在原 App 时安全撤销半成品；已切走则放弃退格、如实提示
@@ -625,6 +642,51 @@ final class DictationController {
                 }
             }
         }
+    }
+
+    private func estimatedTranscriptionDuration(for job: PendingJob) -> TimeInterval {
+        max(1.2, min(8, job.duration * 0.6))
+    }
+
+    private func estimatedPolishingDuration(for text: String) -> TimeInterval {
+        max(1.2, min(6, Double(text.count) / 80.0))
+    }
+
+    private func startProcessingProgress(estimatedDuration: TimeInterval) {
+        stopProcessingProgress(reset: false)
+        hud.state.processingProgress = 0
+        let startedAt = Date()
+        let duration = max(0.4, estimatedDuration)
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            let elapsed = Date().timeIntervalSince(startedAt)
+            let fraction = min(1, max(0, elapsed / duration))
+            let progress = min(0.96, CGFloat(fraction) * 0.96)
+            self.hud.state.processingProgress = progress
+        }
+        processingProgressTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        timer.fire()
+    }
+
+    private func stopProcessingProgress(reset: Bool) {
+        processingProgressTimer?.invalidate()
+        processingProgressTimer = nil
+        if reset {
+            hud.state.processingProgress = 0
+        }
+    }
+
+    private func finishProcessingProgress() async {
+        await MainActor.run {
+            self.processingProgressTimer?.invalidate()
+            self.processingProgressTimer = nil
+            self.hud.state.processingProgress = 1
+        }
+        try? await Task.sleep(nanoseconds: 160_000_000)
     }
 
     /// 按模式后处理转写稿
