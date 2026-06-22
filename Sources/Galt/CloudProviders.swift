@@ -27,13 +27,42 @@ struct STTProviderInfo: Identifiable {
     static let all: [STTProviderInfo] = [
         .init(id: "groq", name: "Groq Whisper", kind: .openAICompatible(base: "https://api.groq.com/openai/v1", model: "whisper-large-v3-turbo"), keyHint: "console.groq.com 免费获取"),
         .init(id: "siliconflow", name: "硅基流动 SenseVoice", kind: .openAICompatible(base: "https://api.siliconflow.cn/v1", model: "FunAudioLLM/SenseVoiceSmall"), keyHint: "cloud.siliconflow.cn 获取，国内直连"),
-        .init(id: "dashscope", name: "阿里云百炼（Qwen3 ASR）", kind: .dashscope, keyHint: "bailian.console.aliyun.com 获取 DashScope API Key"),
+        .init(id: "dashscope", name: "阿里云百炼 ASR", kind: .dashscope, keyHint: "bailian.console.aliyun.com 获取 DashScope API Key"),
         .init(id: "volcano", name: "火山引擎（大模型录音识别）", kind: .volcano, keyHint: "console.volcengine.com → 语音技术，需 App ID 与 Access Token"),
         .init(id: "openai", name: "OpenAI", kind: .openAICompatible(base: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe"), keyHint: "platform.openai.com 获取"),
     ]
 
     static func byId(_ id: String) -> STTProviderInfo {
         all.first { $0.id == id } ?? all[0]
+    }
+}
+
+// MARK: - 阿里云百炼（DashScope）ASR 模型
+
+/// 一个百炼 ASR 模型 = 模型 id + 显示名 + 接口风格 + 期望采样率。
+/// 接口风格决定走哪条链路：
+/// - multimodal：一次性 HTTP（multimodal-generation，base64 音频），如 qwen3-asr-flash；
+/// - realtime：WebSocket 流式识别（api-ws/v1/inference），如 paraformer-realtime 系列。
+/// sampleRate 用于流式：录音固定 16k，8k 模型需把音频重采样到 8kHz。
+struct DashScopeASRModel: Identifiable {
+    enum Style { case multimodal, realtime }
+    let id: String
+    let name: String
+    let style: Style
+    let sampleRate: Int
+
+    static let presets: [DashScopeASRModel] = [
+        .init(id: "qwen3-asr-flash", name: "Qwen3-ASR-Flash（一次性）", style: .multimodal, sampleRate: 16000),
+        .init(id: "qwen3-asr-flash-realtime", name: "Qwen3-ASR-Flash 实时（流式）", style: .realtime, sampleRate: 16000),
+        .init(id: "fun-asr-realtime", name: "Fun-ASR 实时（流式）", style: .realtime, sampleRate: 16000),
+        .init(id: "paraformer-realtime-v2", name: "Paraformer 实时-v2（流式）", style: .realtime, sampleRate: 16000),
+        .init(id: "paraformer-realtime-8k-v2", name: "Paraformer 实时-8k-v2（流式）", style: .realtime, sampleRate: 8000),
+    ]
+
+    static var `default`: DashScopeASRModel { presets[0] }
+
+    static func byId(_ id: String) -> DashScopeASRModel {
+        presets.first { $0.id == id } ?? `default`
     }
 }
 
@@ -209,13 +238,18 @@ struct CloudSTTProvider: STTProvider {
         }
         formField("model", model)
         formField("response_format", "json")
-        // 个人词典作为引导提示，提升专有名词识别率
-        let terms = SettingsStore.shared.dictionaryTerms
+        // 个人词典（含自动学习词）作为引导提示，提升专有名词识别率
+        let terms = SettingsStore.shared.effectiveDictionaryTerms
         if !terms.isEmpty {
             formField("prompt", terms.joined(separator: ", "))
         }
-        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
-        body.append(wav)
+        // OpenAI 兼容厂商（Groq/OpenAI/硅基流动）确定接受 m4a：优先用 AAC 压缩上传，省体积/时延；
+        // 编码失败则回退原始 WAV。火山/百炼走各自路径，仍用 WAV。
+        let (payloadData, filename, mime): (Data, String, String) =
+            AudioRecorder.aacData(fromWAV: wav).map { ($0, "audio.m4a", "audio/mp4") }
+            ?? (wav, "audio.wav", "audio/wav")
+        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\nContent-Type: \(mime)\r\n\r\n".data(using: .utf8)!)
+        body.append(payloadData)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
 
@@ -228,19 +262,34 @@ struct CloudSTTProvider: STTProvider {
         return try JSONDecoder().decode(TranscriptionResponse.self, from: data).text
     }
 
-    // MARK: 阿里云百炼（DashScope 多模态，base64 音频）
+    // MARK: 阿里云百炼（DashScope）：按所选模型分发（一次性多模态 / 实时流式）
 
     private func transcribeDashScope(wav: Data) async throws -> String {
         let key = SettingsStore.shared.sttKey(forProvider: "dashscope")
         guard !key.isEmpty else { throw STTError.missingAPIKey }
 
+        let model = DashScopeASRModel.byId(SettingsStore.shared.dashscopeModel)
+        switch model.style {
+        case .multimodal:
+            return try await transcribeDashScopeMultimodal(wav: wav, key: key, model: model.id)
+        case .realtime:
+            let timeout = SettingsStore.shared.requestTimeout(forProvider: "dashscope")
+            return try await DashScopeStreamingASR.transcribe(
+                wav: wav, key: key, model: model.id,
+                sampleRate: model.sampleRate, timeout: timeout
+            )
+        }
+    }
+
+    /// 一次性多模态接口（multimodal-generation，base64 音频）：qwen3-asr-flash 等
+    private func transcribeDashScopeMultimodal(wav: Data, key: String, model: String) async throws -> String {
         var request = URLRequest(url: URL(string: "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let payload: [String: Any] = [
-            "model": "qwen3-asr-flash",
+            "model": model,
             "input": [
                 "messages": [
                     ["role": "system", "content": [["text": ""]]],
@@ -273,6 +322,15 @@ struct CloudSTTProvider: STTProvider {
         }
         let decoded = try JSONDecoder().decode(DSResponse.self, from: data)
         return decoded.output.choices.first?.message.content.compactMap(\.text).joined() ?? ""
+    }
+
+    /// 火山「录音文件」类接口的 audio 字段：开启压缩且编码成功时用 ogg_opus，否则回退 wav。
+    /// 火山极速版/标准版均接受 ogg_opus（format 白名单含之），base64 体积约降 10×。
+    private func volcanoAudioField(wav: Data) -> [String: Any] {
+        if SettingsStore.shared.compressVolcanoUpload, let opus = OpusEncoder.encode(fromWAV: wav) {
+            return ["format": "ogg_opus", "data": opus.base64EncodedString()]
+        }
+        return ["format": "wav", "data": wav.base64EncodedString()]
     }
 
     // MARK: 火山引擎（按所选模型的协议分发：一次性 HTTP / 流式 WebSocket）
@@ -322,7 +380,7 @@ struct CloudSTTProvider: STTProvider {
 
         let payload: [String: Any] = [
             "user": ["uid": "galt"],
-            "audio": ["format": "wav", "data": wav.base64EncodedString()],
+            "audio": volcanoAudioField(wav: wav),
             "request": ["model_name": "bigmodel", "enable_itn": true, "enable_punc": true],
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -330,6 +388,8 @@ struct CloudSTTProvider: STTProvider {
         let (data, response) = try await URLSession.shared.data(for: request)
         let http = response as? HTTPURLResponse
         let statusCode = http?.value(forHTTPHeaderField: "X-Api-Status-Code") ?? ""
+        // 20000003：音频无有效语音（静音/纯噪声）——非错误，按空结果返回（验证可容忍、真静音优雅收尾）
+        if statusCode == "20000003" { return "" }
         guard statusCode == "20000000" else {
             let message = http?.value(forHTTPHeaderField: "X-Api-Message")
                 ?? String(data: data, encoding: .utf8) ?? ""
@@ -372,7 +432,7 @@ struct CloudSTTProvider: STTProvider {
         // 1) 提交任务
         let submitBody: [String: Any] = [
             "user": ["uid": "galt"],
-            "audio": ["format": "wav", "data": wav.base64EncodedString()],
+            "audio": volcanoAudioField(wav: wav),
             "request": ["model_name": "bigmodel", "enable_itn": true, "enable_punc": true],
         ]
         let (sData, sResp) = try await URLSession.shared.data(for: try makeRequest(submitURL, body: submitBody))
@@ -398,6 +458,8 @@ struct CloudSTTProvider: STTProvider {
             case "20000000":
                 let text = (try? JSONDecoder().decode(VolcResponse.self, from: qData))?.result?.text ?? ""
                 return text
+            case "20000003": // 音频无有效语音——非错误，按空结果收尾
+                return ""
             case "20000001", "20000002": // 排队 / 处理中
                 try await Task.sleep(nanoseconds: interval)
             default:

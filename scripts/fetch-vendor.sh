@@ -7,8 +7,10 @@
 # 产物：
 #   Vendor/sherpa-onnx.xcframework   sherpa-onnx 静态库（含 CSherpaOnnx modulemap）
 #   Vendor/onnxruntime.xcframework   onnxruntime 动态库（由 dylib 现场打包）
+#   Vendor/opus.xcframework          libopus 静态库（来自 Homebrew opus，纯链接产物）
 #
 # 注：Vendor/whisper.xcframework 直接随仓库提供，本脚本不处理。
+# 注：opus 步骤依赖 Homebrew，需先 `brew install opus`（CI 的 macOS runner 自带 brew）。
 
 set -euo pipefail
 
@@ -59,6 +61,26 @@ if [[ "$FORCE" == "--force" || ! -d "$VENDOR/onnxruntime.xcframework" ]]; then
   echo "  ✓ Vendor/onnxruntime.xcframework"
 else
   echo "▸ onnxruntime.xcframework 已存在，跳过（--force 可重下）"
+fi
+
+# ---- opus.xcframework（libopus 静态库，来自 Homebrew opus，纯链接产物）----
+# 仅打包 libopus.a；Swift 侧通过 Sources/COpusShim（随仓库的 C shim + opus 头）调用。
+if [[ "$FORCE" == "--force" || ! -d "$VENDOR/opus.xcframework" ]]; then
+  echo "▸ 打包 libopus（来自 Homebrew opus）…"
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "  ✗ 需要 Homebrew：先安装 brew，再执行 brew install opus" >&2
+    exit 1
+  fi
+  if ! opus_prefix="$(brew --prefix opus 2>/dev/null)" || [[ ! -f "$opus_prefix/lib/libopus.a" ]]; then
+    echo "  ✗ 未找到 libopus.a：请先执行 brew install opus" >&2
+    exit 1
+  fi
+  rm -rf "$VENDOR/opus.xcframework"
+  xcodebuild -create-xcframework -library "$opus_prefix/lib/libopus.a" \
+    -output "$VENDOR/opus.xcframework" >/dev/null
+  echo "  ✓ Vendor/opus.xcframework"
+else
+  echo "▸ opus.xcframework 已存在，跳过（--force 可重下）"
 fi
 
 echo "完成。现在可执行：swift build"

@@ -8,7 +8,7 @@ struct OnboardingView: View {
     static let currentVersion = 1
 
     enum Step: Int, CaseIterable {
-        case welcome, permissions, preferences
+        case welcome, permissions, preferences, practice
     }
 
     let onComplete: () -> Void
@@ -19,6 +19,8 @@ struct OnboardingView: View {
     @State private var speechStatus = SFSpeechRecognizer.authorizationStatus()
     // 辅助功能授权状态：AXIsProcessTrusted() 不可观察，用 @State 缓存并定时/回前台刷新
     @State private var accessibilityGranted = AXIsProcessTrusted()
+    // 试用步骤：捕获到第一次听写的文本（用历史变化检测「激活」）
+    @State private var practiceText: String?
     @AppStorage("dictationHotkey") private var dictationHotkey = "fn"
     @AppStorage("localLocaleId") private var localLocale = "zh-CN"
     @AppStorage("engineMode") private var engineMode = "auto"
@@ -69,6 +71,12 @@ struct OnboardingView: View {
         .onReceive(permissionPoll) { _ in
             if step == .permissions { refreshPermissionStatus() }
         }
+        // 试用步骤：用户在任意 App 里成功听写一次 → 历史新增 → 捕获文本作为「激活」反馈
+        .onReceive(NotificationCenter.default.publisher(for: .galtHistoryChanged)) { _ in
+            if step == .practice, practiceText == nil {
+                practiceText = HistoryStore.shared.all().first?.text
+            }
+        }
     }
 
     private var header: some View {
@@ -95,7 +103,7 @@ struct OnboardingView: View {
 
     private var footerButton: some View {
         Button(action: advance) {
-            Text(step == .preferences ? "完成" : "继续")
+            Text(step == .practice ? "完成" : "继续")
                 .font(.system(size: 13, weight: .semibold))
                 .id("button-\(step.rawValue)")
                 .transition(.opacity.combined(with: .scale(scale: reduceMotion ? 1 : 0.98)))
@@ -224,7 +232,72 @@ struct OnboardingView: View {
                     }
                 }
             }
+        case .practice:
+            VStack(alignment: .leading, spacing: GaltDesign.Spacing.lg) {
+                stagedRow(0) {
+                    infoRow(
+                        icon: "hand.tap",
+                        title: "按住 \(HotkeyCombo.dictationDisplay) 说话，松开即出字",
+                        text: "先把光标点进下面某个 App 的输入框，再按住快捷键说一句话。",
+                        height: 44
+                    )
+                }
+                stagedRow(1) { practiceApps }
+                stagedRow(2) { practiceStatus }
+            }
         }
+    }
+
+    /// 试用步骤：一排「打开练习」目标 App（仅展示已安装的）
+    private var practiceApps: some View {
+        HStack(spacing: GaltDesign.Spacing.sm) {
+            ForEach(practiceTargets, id: \.bundleId) { target in
+                Button(target.name) { launchApp(target.bundleId) }
+                    .buttonStyle(OnboardingSecondaryButtonStyle())
+                    .fixedSize()
+            }
+        }
+        .frame(width: 424, height: 28, alignment: .leading)
+    }
+
+    /// 实时激活反馈：捕获到第一次听写即庆祝
+    private var practiceStatus: some View {
+        HStack(spacing: GaltDesign.Spacing.sm) {
+            Image(systemName: practiceText != nil ? "checkmark.circle.fill" : "ellipsis.circle")
+                .foregroundStyle(practiceText != nil ? Palette.success : .secondary)
+            Text(practiceStatusText)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(practiceText != nil ? .primary : .secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(width: 424, height: 40, alignment: .leading)
+    }
+
+    private var practiceStatusText: String {
+        if let text = practiceText {
+            let preview = text.count > 24 ? String(text.prefix(24)) + "…" : text
+            return "成功！你刚说了「\(preview)」——大功告成，点「完成」即可。"
+        }
+        return "等待你的第一次听写…"
+    }
+
+    /// 候选练习 App（取已安装的常用文本类 App）
+    private var practiceTargets: [(name: String, bundleId: String)] {
+        let candidates: [(String, String)] = [
+            ("备忘录", "com.apple.Notes"),
+            ("Safari", "com.apple.Safari"),
+            ("邮件", "com.apple.mail"),
+            ("微信", "com.tencent.xinWeChat"),
+        ]
+        return candidates
+            .filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.1) != nil }
+            .map { (name: $0.0, bundleId: $0.1) }
+    }
+
+    private func launchApp(_ bundleId: String) {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else { return }
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
     }
 
     private var headerTitle: String {
@@ -232,6 +305,7 @@ struct OnboardingView: View {
         case .welcome: return "欢迎使用 Galt"
         case .permissions: return "设置权限"
         case .preferences: return "设置偏好"
+        case .practice: return "试一试"
         }
     }
 
@@ -243,6 +317,8 @@ struct OnboardingView: View {
             return "按需授权，未授权的项目也可以稍后在系统设置或 Galt 设置中处理。"
         case .preferences:
             return "先使用推荐默认值即可。完成后你可以随时在设置中修改。"
+        case .practice:
+            return "打开一个常用 App，把光标点进输入框，按住快捷键说句话试试。"
         }
     }
 
@@ -357,7 +433,7 @@ struct OnboardingView: View {
 
     private func advance() {
         guard let index = Step.allCases.firstIndex(of: step) else { return }
-        if step == .preferences {
+        if step == .practice {
             onComplete()
             return
         }
