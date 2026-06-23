@@ -7,7 +7,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Galt",
-            dependencies: ["whisper", "sherpa-onnx", "onnxruntime"],
+            dependencies: ["whisper", "sherpa-onnx", "onnxruntime", "opus", "COpusShim"],
             path: "Sources/Galt",
             swiftSettings: [
                 // 打开 sherpa-onnx 本地引擎（SenseVoice / Paraformer）真实实现
@@ -32,6 +32,16 @@ let package = Package(
         .binaryTarget(
             name: "onnxruntime",
             path: "Vendor/onnxruntime.xcframework"
+        ),
+        // libopus 静态库（osx-arm64，来自 Homebrew opus 1.6.1，BSD 许可）：火山上传走 Opus 压缩
+        .binaryTarget(
+            name: "opus",
+            path: "Vendor/opus.xcframework"
+        ),
+        // libopus 的 C shim：包装 opus_encoder_ctl 这类变参函数供 Swift 调用，并自带 opus 头
+        .target(
+            name: "COpusShim",
+            path: "Sources/COpusShim"
         ),
     ]
 )

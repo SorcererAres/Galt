@@ -1,0 +1,4 @@
+module COpusShim {
+    header "copus_shim.h"
+    export *
+}

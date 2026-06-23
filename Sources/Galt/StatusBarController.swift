@@ -6,24 +6,36 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let hintItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let statsItem = NSMenuItem(title: "还没有听写记录", action: nil, keyEquivalent: "")
     private let polishItem = NSMenuItem(title: "AI 润色", action: #selector(togglePolish(_:)), keyEquivalent: "")
+    private let pauseItem = NSMenuItem(title: "暂停听写", action: #selector(togglePause(_:)), keyEquivalent: "")
     private var translationMenu: NSMenu?
     private var micMenu: NSMenu?
+
+    /// 当前是否正在录音（图标状态机用：录音 > 暂停 > 空闲）
+    private var recordingActive = false
 
     override init() {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
-        let idle = GaltMark.image(size: 18)
-        idle.accessibilityDescription = "Galt"
-        item.button?.image = idle
         item.menu = buildMenu()
+        refreshIcon()
     }
 
     /// 录音时菜单栏图标转为红色，给出与系统录音指示一致的活动反馈
     func setRecording(_ active: Bool) {
+        recordingActive = active
+        refreshIcon()
+    }
+
+    /// 按状态刷新菜单栏图标：录音=红，暂停=灰，空闲=常态
+    private func refreshIcon() {
         guard let button = item.button else { return }
-        if active {
+        if recordingActive {
             let image = GaltMark.image(size: 18, color: .systemRed)
             image.accessibilityDescription = "Galt 正在听写"
+            button.image = image
+        } else if SettingsStore.shared.dictationPaused {
+            let image = GaltMark.image(size: 18, color: .tertiaryLabelColor)
+            image.accessibilityDescription = "Galt 已暂停"
             button.image = image
         } else {
             let image = GaltMark.image(size: 18)
@@ -46,6 +58,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let console = NSMenuItem(title: "打开控制台", action: #selector(openConsole), keyEquivalent: "d")
         console.target = self
         menu.addItem(console)
+
+        pauseItem.target = self
+        menu.addItem(pauseItem)
 
         polishItem.target = self
         menu.addItem(polishItem)
@@ -76,6 +91,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         history.target = self
         menu.addItem(history)
 
+        let diagnostics = NSMenuItem(title: "权限与麦克风自检…", action: #selector(openDiagnostics), keyEquivalent: "")
+        diagnostics.target = self
+        menu.addItem(diagnostics)
+
         let reonboard = NSMenuItem(title: "重新运行引导…", action: #selector(rerunOnboarding), keyEquivalent: "")
         reonboard.target = self
         menu.addItem(reonboard)
@@ -93,6 +112,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     /// 每次展开菜单时刷新统计与开关状态
     func menuWillOpen(_ menu: NSMenu) {
         hintItem.title = Self.hintTitle()
+        pauseItem.state = SettingsStore.shared.dictationPaused ? .on : .off
         polishItem.state = SettingsStore.shared.polishEnabled ? .on : .off
         let target = SettingsStore.shared.translationTarget
         translationMenu?.items.forEach { item in
@@ -107,6 +127,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             if stats.savedMinutes > 0 { title += " · 省 \(stats.savedMinutes) 分钟" }
             statsItem.title = title
         }
+    }
+
+    @objc private func togglePause(_ sender: NSMenuItem) {
+        SettingsStore.shared.dictationPaused.toggle()
+        sender.state = SettingsStore.shared.dictationPaused ? .on : .off
+        refreshIcon()
     }
 
     @objc private func togglePolish(_ sender: NSMenuItem) {
@@ -157,6 +183,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func rerunOnboarding() {
         SettingsStore.shared.resetOnboarding()
         OnboardingWindowController.shared.show()
+    }
+
+    @objc private func openDiagnostics() {
+        DiagnosticsWindowController.shared.show()
     }
 
     @objc private func openHistory() {

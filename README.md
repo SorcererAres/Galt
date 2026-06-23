@@ -5,11 +5,18 @@ Typeless 风格的 AI 语音听写工具（macOS 菜单栏 App）：按住 `fn` 
 ## 构建与运行
 
 ```bash
-make run     # 编译 → 打包 dist/Galt.app → 启动
-make dmg     # 额外生成可分发的 dist/Galt.dmg
+brew install opus  # 提供 libopus，供 make vendor 打包 Vendor/opus.xcframework
+make vendor        # 按需下载 / 组装本地引擎二进制依赖（sherpa-onnx、onnxruntime、opus）
+make build         # release 编译
+make run           # 编译 → 打包 dist/Galt.app → 启动
+make dmg           # 额外生成可分发的 dist/Galt-<版本>.dmg
 ```
 
-要求：macOS 14+，Xcode 命令行工具。
+要求：macOS 14+，Xcode 命令行工具，Homebrew（用于 `brew install opus`）。
+
+> 首次构建务必先 `brew install opus` 再 `make vendor`，否则缺少 `Vendor/opus.xcframework` 会编译失败。
+
+> `dist/`、`.build/`、`.dmg` 等生成产物不应提交到 git；重新发布时用脚本生成。
 
 ## 首次使用
 
@@ -50,3 +57,9 @@ make dmg     # 额外生成可分发的 dist/Galt.dmg
 ## 路线图
 
 见 [PLAN.md](PLAN.md)。M1–M4.5 已完成（核心闭环、智能润色、云端/Apple/Whisper 三引擎、设置面板、历史统计、语音编辑、翻译、Keychain、DMG 打包）；后续可选：Sparkle 自动更新、官网与 iOS。
+
+## 仓库维护
+
+- 贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)
+- 版本变更见 [CHANGELOG.md](CHANGELOG.md)
+- 仓库健康度与后续优化建议见 [Docs/REPOSITORY_HEALTH.md](Docs/REPOSITORY_HEALTH.md)
