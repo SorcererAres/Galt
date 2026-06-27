@@ -20,8 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         SettingsStore.shared.applyAppearance()
         SettingsStore.shared.applyDockVisibility()
-        // 后台预热历史缓存：首次进入概览/历史页即时，不在主线程现读现解析整份历史
-        HistoryStore.shared.preload()
         installMainMenu()
         dictation = DictationController()
         statusBar = StatusBarController()
