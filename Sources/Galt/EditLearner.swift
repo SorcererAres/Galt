@@ -73,15 +73,22 @@ final class EditLearner {
         guard let current = Self.value(of: p.element) else { return }
         guard current != p.baseline else { return }  // 未改动，继续等
         pending = nil
-        guard let term = Self.learnedCorrection(baseline: p.baseline, current: current, inserted: p.inserted) else { return }
-        if SettingsStore.shared.learnTerm(term), announce {
-            onLearned?(term)
+        guard let c = Self.learnedCorrection(baseline: p.baseline, current: current, inserted: p.inserted) else { return }
+        // 学「对词」（维持偏置 + toast）
+        let learned = SettingsStore.shared.learnTerm(c.right)
+        // 若是「错词 → 对词」的就地纠正，沉淀方向对，供确定性替换消灭复现
+        if !c.wrong.isEmpty {
+            SettingsStore.shared.addCorrectionPair(wrong: c.wrong, right: c.right)
+        }
+        if learned, announce {
+            onLearned?(c.right)
         }
     }
 
-    /// 比较基线与当前文本，求出「被替换进来的新片段」；不构成可学纠正则返回 nil。
+    /// 比较基线与当前文本，求出被替换的「旧片段 → 新片段」；不构成可学纠正则返回 nil。
     /// 仅当变更落在我们插入文本所在区间、且新旧片段都短小、新片段是个不含空白的「词」时才学。
-    static func learnedCorrection(baseline: String, current: String, inserted: String) -> String? {
+    /// `wrong` 为被替换掉的旧片段（纯插入时为空，调用方据此决定是否构成方向纠错对）。
+    static func learnedCorrection(baseline: String, current: String, inserted: String) -> (wrong: String, right: String)? {
         let a = Array(baseline), b = Array(current)
         // 公共前缀
         var p = 0
@@ -90,7 +97,7 @@ final class EditLearner {
         var s = 0
         while s < a.count - p, s < b.count - p, a[a.count - 1 - s] == b[b.count - 1 - s] { s += 1 }
 
-        let oldSeg = Array(a[p..<(a.count - s)])
+        let oldSeg = String(a[p..<(a.count - s)])
         let newSeg = String(b[p..<(b.count - s)])
         guard !newSeg.isEmpty else { return nil }                 // 纯删除，不学
         guard newSeg.count <= maxSegment, oldSeg.count <= maxSegment else { return nil }
@@ -99,7 +106,9 @@ final class EditLearner {
         guard let start = indexOfSubarray(a, Array(inserted)) else { return nil }
         let end = start + inserted.count
         guard p <= end, (a.count - s) >= start else { return nil }
-        return newSeg
+        // 旧片段含空白（多半是跨词大改）则不作为方向对，只把新词当作可学词
+        let wrong = oldSeg.contains(where: { $0.isWhitespace || $0.isNewline }) ? "" : oldSeg
+        return (wrong: wrong, right: newSeg)
     }
 
     /// 朴素子串定位（按字符）；找不到返回 nil

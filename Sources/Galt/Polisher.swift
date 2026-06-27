@@ -56,6 +56,7 @@ struct Polisher {
         if !terms.isEmpty {
             system += "\n用户词典（这些专有名词请优先采用此写法）：\(terms.joined(separator: "、"))"
         }
+        system += Self.correctionHint()
         if let appName, !appName.isEmpty {
             system += "\n该文本将被粘贴到应用「\(appName)」中。"
         }
@@ -187,6 +188,15 @@ struct Polisher {
         }
         let trimmed = full.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    /// 把已学纠错对喂进系统提示，兜住确定性替换没命中的变体/上下文形式。
+    /// 转写稿在进入润色前已做过确定性替换，这里是语义层的二次保险，取前若干条避免 prompt 过长。
+    private static func correctionHint() -> String {
+        let pairs = SettingsStore.shared.correctionPairs.prefix(30)
+        guard !pairs.isEmpty else { return "" }
+        let list = pairs.map { "\($0.wrong)→\($0.right)" }.joined(separator: "；")
+        return "\n常见误识别纠正（若整理后文中仍出现左侧词，请改为右侧）：\(list)"
     }
 
     private static func styleHint(appName: String?, bundleId: String?) -> String? {

@@ -2071,7 +2071,7 @@ struct HistoryRow: View {
 
 struct DictionaryPage: View {
     private enum TermFilter: String, CaseIterable, Identifiable {
-        case all, automatic, manual
+        case all, automatic, manual, corrections
 
         var id: TermFilter { self }
 
@@ -2080,6 +2080,7 @@ struct DictionaryPage: View {
             case .all: return "全部"
             case .automatic: return "自动添加"
             case .manual: return "手动添加"
+            case .corrections: return "纠错对"
             }
         }
 
@@ -2097,6 +2098,10 @@ struct DictionaryPage: View {
     @State private var isSearching = false
     /// learnedTerms 非 @AppStorage 可观测，删词后自增此值强制刷新
     @State private var learnedRefresh = 0
+    /// 纠错对（错→对）同样非可观测，增删后自增强制刷新
+    @State private var correctionsRefresh = 0
+    @State private var newWrong = ""
+    @State private var newRight = ""
 
     // Figma 设计令牌
     private let titleColor = Palette.textPrimary
@@ -2129,6 +2134,8 @@ struct DictionaryPage: View {
             source = terms
         case .automatic:
             source = automaticTerms
+        case .corrections:
+            source = []  // 纠错对走独立视图，不参与词条列表
         }
 
         guard !searchQuery.isEmpty else { return source }
@@ -2156,7 +2163,9 @@ struct DictionaryPage: View {
             // 与历史页一致：滚动条右侧留白、底部避开面板圆角
             BrandScrollView(scrollbarInset: EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 6)) {
                 Group {
-                    if filteredTerms.isEmpty {
+                    if filter == .corrections {
+                        correctionsView
+                    } else if filteredTerms.isEmpty {
                         emptyDictionaryState
                             .padding(.top, 72)
                     } else {
@@ -2210,7 +2219,7 @@ struct DictionaryPage: View {
                     filter = item
                 } label: {
                     HStack(spacing: GaltDesign.Spacing.xxs) {
-                        if item != .all {
+                        if item == .automatic || item == .manual {
                             Group {
                                 if item == .automatic {
                                     AutoAddShape().stroke(style: termIconStroke)
@@ -2340,6 +2349,91 @@ struct DictionaryPage: View {
         } else {
             termsText = terms.filter { $0 != term }.joined(separator: "\n")
         }
+    }
+
+    // MARK: 纠错对（错词 → 对词）
+
+    private var correctionPairs: [SettingsStore.CorrectionPair] {
+        _ = correctionsRefresh
+        let all = seedTerms == nil ? SettingsStore.shared.correctionPairs : []
+        guard !searchQuery.isEmpty else { return all }
+        return all.filter {
+            $0.wrong.localizedCaseInsensitiveContains(searchQuery) || $0.right.localizedCaseInsensitiveContains(searchQuery)
+        }
+    }
+
+    private var correctionsView: some View {
+        VStack(alignment: .leading, spacing: GaltDesign.Spacing.md) {
+            // 内联添加：错词 → 对词
+            HStack(spacing: GaltDesign.Spacing.sm) {
+                pairField("错词（识别错的）", text: $newWrong)
+                Image(systemName: "arrow.right").font(.system(size: 12)).foregroundStyle(mutedColor)
+                pairField("对词（正确的）", text: $newRight)
+                Button { addPair() } label: {
+                    Text("添加")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.onPrimary)
+                        .padding(.horizontal, GaltDesign.Spacing.md)
+                        .frame(height: 28)
+                }
+                .buttonStyle(FilledButtonStyle(fill: addButtonFill))
+                .disabled(newWrong.trimmingCharacters(in: .whitespaces).count < 2
+                          || newRight.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            Text("听写时会把左侧词自动改为右侧；你在输入框里的就地纠正也会自动学到这里。")
+                .font(.system(size: 12)).foregroundStyle(mutedColor)
+
+            if correctionPairs.isEmpty {
+                Text(searchQuery.isEmpty ? "还没有纠错对——纠正一次识别错误，或在上面手动添加。" : "没有匹配的纠错对。")
+                    .font(.system(size: 13)).foregroundStyle(mutedColor)
+                    .padding(.top, GaltDesign.Spacing.xl)
+            } else {
+                VStack(spacing: GaltDesign.Spacing.xs) {
+                    ForEach(correctionPairs) { correctionRow($0) }
+                }
+            }
+        }
+    }
+
+    private func pairField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13))
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: GaltDesign.Radius.control, style: .continuous).fill(segmentBackground))
+            .frame(maxWidth: 200)
+    }
+
+    private func correctionRow(_ pair: SettingsStore.CorrectionPair) -> some View {
+        HStack(spacing: GaltDesign.Spacing.sm) {
+            Text(pair.wrong).font(.system(size: 13)).foregroundStyle(titleColor)
+            Image(systemName: "arrow.right").font(.system(size: 11)).foregroundStyle(mutedColor)
+            Text(pair.right).font(.system(size: 13, weight: .medium)).foregroundStyle(titleColor)
+            Spacer(minLength: 0)
+            Button { removePair(pair) } label: {
+                Image(systemName: "trash").font(.system(size: 11)).foregroundStyle(Palette.danger)
+            }
+            .buttonStyle(IconButtonStyle(cornerRadius: 6, padding: 4))
+            .help("删除该纠错对")
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 40)
+        .background(RoundedRectangle(cornerRadius: GaltDesign.Radius.card, style: .continuous).fill(Palette.surfaceCard))
+        .overlay(RoundedRectangle(cornerRadius: GaltDesign.Radius.card, style: .continuous).strokeBorder(hairline, lineWidth: 1))
+    }
+
+    private func addPair() {
+        if SettingsStore.shared.addCorrectionPair(wrong: newWrong, right: newRight) {
+            newWrong = ""
+            newRight = ""
+            correctionsRefresh += 1
+        }
+    }
+
+    private func removePair(_ pair: SettingsStore.CorrectionPair) {
+        SettingsStore.shared.removeCorrectionPair(wrong: pair.wrong)
+        correctionsRefresh += 1
     }
 }
 

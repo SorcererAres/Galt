@@ -531,7 +531,8 @@ final class DictationController {
         currentJob = Task { [weak self, streamSession] in
             guard let self else { return }
             do {
-                let raw = try await self.transcribe(wav: job.wav)
+                // 转写后先做一次确定性纠错替换（消灭已学「错→对」的复现），再进润色
+                let raw = Self.applyCorrections(to: try await self.transcribe(wav: job.wav))
                 let rawHasContent = !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 // 转写完成、进入 LLM 阶段前切换文案；纯听写（无润色）则保持「正在转写」直到出字
                 if job.usesLLM {
@@ -738,6 +739,20 @@ final class DictationController {
         case .ask:
             return try await polisher.answer(raw, appName: appName, onDelta: onDelta)
         }
+    }
+
+    /// 对转写稿应用已学的确定性纠错对（错词 → 对词）。
+    /// 新在前逐对替换；跳过文中不含该错词、或对词反含错词（防自循环）的对。
+    static func applyCorrections(to text: String) -> String {
+        let pairs = SettingsStore.shared.correctionPairs
+        guard !pairs.isEmpty else { return text }
+        var out = text
+        for pair in pairs where !pair.right.contains(pair.wrong) {
+            if out.contains(pair.wrong) {
+                out = out.replacingOccurrences(of: pair.wrong, with: pair.right)
+            }
+        }
+        return out
     }
 
     /// 引擎路由：自动模式下云端优先、本地离线兜底
