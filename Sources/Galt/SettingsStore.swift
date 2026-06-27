@@ -107,47 +107,6 @@ final class SettingsStore {
         return (dictionaryTerms + learnedTerms).filter { seen.insert($0).inserted }
     }
 
-    // MARK: - 纠错对（误识别「错词 → 对词」的定向映射）
-
-    /// 一条纠错对：把转写里的 `wrong` 定向改为 `right`。
-    /// 由「出字后就地纠正」自动学习，或用户在词典页手动维护。
-    struct CorrectionPair: Codable, Equatable, Identifiable {
-        let wrong: String
-        let right: String
-        var id: String { wrong }
-    }
-
-    /// 纠错对列表（新在前，上限 100），JSON 持久化于 UserDefaults
-    var correctionPairs: [CorrectionPair] {
-        get {
-            guard let data = defaults.data(forKey: "correctionPairs"),
-                  let pairs = try? JSONDecoder().decode([CorrectionPair].self, from: data) else { return [] }
-            return pairs
-        }
-        set {
-            let capped = Array(newValue.prefix(100))
-            defaults.set(try? JSONEncoder().encode(capped), forKey: "correctionPairs")
-        }
-    }
-
-    /// 并入一条纠错对（去重、置顶、限长、过滤无效）；返回 true 表示确为新增/更新
-    @discardableResult
-    func addCorrectionPair(wrong: String, right: String) -> Bool {
-        let w = wrong.trimmingCharacters(in: .whitespacesAndNewlines)
-        let r = right.trimmingCharacters(in: .whitespacesAndNewlines)
-        // 错词至少 2 字、错对不相等、对词非空，且对词不包含错词（避免替换自循环）
-        guard w.count >= 2, !r.isEmpty, w != r, !r.contains(w) else { return false }
-        var pairs = correctionPairs.filter { $0.wrong != w }
-        pairs.insert(CorrectionPair(wrong: w, right: r), at: 0)
-        correctionPairs = pairs
-        return true
-    }
-
-    /// 删除某个错词对应的纠错对
-    func removeCorrectionPair(wrong: String) {
-        correctionPairs = correctionPairs.filter { $0.wrong != wrong }
-    }
-
     /// 翻译模式目标语言："off" 关闭，或 "zh-Hans" / "en" / "ja"
     var translationTarget: String {
         get { defaults.string(forKey: "translationTarget") ?? "off" }

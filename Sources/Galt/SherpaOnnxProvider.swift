@@ -66,27 +66,10 @@ final class SherpaOnnxProvider: STTProvider {
         }
 
         let featConfig = sherpaOnnxFeatureConfig(sampleRate: 16000, featureDim: 80)
-        // 个人词典写成 hotwords 文件做偏置（best-effort）：离线 SenseVoice/Paraformer 走 greedy CTC/AED，
-        // 对 hotwords 的支持有限、多半为弱效或无效；热词在识别器构建时一次性烘入，词典中途变更需切模型/重启才更新。
-        let hotwordsFile = Self.writeHotwordsFile()
         var config = sherpaOnnxOfflineRecognizerConfig(
-            featConfig: featConfig, modelConfig: modelConfig,
-            hotwordsFile: hotwordsFile, hotwordsScore: 1.5
+            featConfig: featConfig, modelConfig: modelConfig
         )
         return SherpaOnnxOfflineRecognizer(config: &config)
-    }
-
-    /// 把个人词典（含自动学习词）写成 hotwords 文件（每行一个词）；无词或写失败返回空串
-    private static func writeHotwordsFile() -> String {
-        let terms = SettingsStore.shared.effectiveDictionaryTerms.filter { !$0.isEmpty }
-        guard !terms.isEmpty else { return "" }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("galt-sherpa-hotwords.txt")
-        do {
-            try terms.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
-            return url.path
-        } catch {
-            return ""
-        }
     }
 
     /// 16-bit PCM WAV → Float 样本（跳过 44 字节头）；与 WhisperCppProvider 同源同格式

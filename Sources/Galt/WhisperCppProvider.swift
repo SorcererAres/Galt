@@ -35,20 +35,10 @@ final class WhisperCppProvider: STTProvider {
         params.print_timestamps = false
         params.n_threads = Int32(max(2, ProcessInfo.processInfo.activeProcessorCount - 2))
 
-        // 个人词典（含自动学习词）作为 initial_prompt 偏置解码，倾向输出已知专名
-        let promptTerms = SettingsStore.shared.effectiveDictionaryTerms.joined(separator: "、")
-        let status: Int32 = "auto".withCString { lang -> Int32 in
+        let status: Int32 = "auto".withCString { lang in
             params.language = lang
-            // 嵌套闭包读取的是被 initial_prompt 赋值后的 params；whisper_full 按值拷贝
-            func runFull() -> Int32 {
-                samples.withUnsafeBufferPointer { buffer in
-                    whisper_full(ctx, params, buffer.baseAddress, Int32(buffer.count))
-                }
-            }
-            guard !promptTerms.isEmpty else { return runFull() }
-            return promptTerms.withCString { p -> Int32 in
-                params.initial_prompt = p
-                return runFull()
+            return samples.withUnsafeBufferPointer { buffer in
+                whisper_full(ctx, params, buffer.baseAddress, Int32(buffer.count))
             }
         }
         guard status == 0 else { throw STTError.localUnavailable }

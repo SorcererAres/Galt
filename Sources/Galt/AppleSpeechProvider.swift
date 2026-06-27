@@ -24,8 +24,8 @@ struct AppleSpeechProvider: STTProvider {
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
-        // 个人词典（含自动学习词）：提升专有名词识别率
-        request.contextualStrings = SettingsStore.shared.effectiveDictionaryTerms
+        // 个人词典：提升专有名词识别率
+        request.contextualStrings = SettingsStore.shared.dictionaryTerms
 
         let text: String = try await withCheckedThrowingContinuation { continuation in
             var finished = false
